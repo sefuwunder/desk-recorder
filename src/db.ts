@@ -27,6 +27,7 @@ export interface Todo {
   done: number; // 0 | 1
   position: number;
   created_at: number;
+  ascent_task_id: string | null; // Ascent task id once sent there, null until then
 }
 
 export function openDb(path: string): Database {
@@ -71,6 +72,14 @@ export function openDb(path: string): Database {
     );
     CREATE INDEX IF NOT EXISTS idx_todos_recording ON todos(recording_id, position);
   `);
+  // lightweight migration: to-dos created before the Ascent integration lack
+  // the column that tracks which items have already been sent to Ascent
+  const todoCols = new Set(
+    (db.query("PRAGMA table_info(todos)").all() as { name: string }[]).map((c) => c.name)
+  );
+  if (!todoCols.has("ascent_task_id")) {
+    db.exec("ALTER TABLE todos ADD COLUMN ascent_task_id TEXT");
+  }
   return db;
 }
 
@@ -154,19 +163,31 @@ export function deleteRecording(db: Database, id: string): Recording | null {
   return rec;
 }
 
+const TODO_COLS =
+  "id, recording_id, text, done, position, created_at, ascent_task_id";
+
 /* ---------------- to-dos ---------------- */
 
 export function listTodos(db: Database, recordingId: string): Todo[] {
   return db
-    .query("SELECT id, recording_id, text, done, position, created_at FROM todos WHERE recording_id = ? ORDER BY position ASC, created_at ASC")
+    .query(`SELECT ${TODO_COLS} FROM todos WHERE recording_id = ? ORDER BY position ASC, created_at ASC`)
     .all(recordingId) as Todo[];
 }
 
 export function getTodo(db: Database, todoId: string): Todo | null {
   return (
-    (db.query("SELECT id, recording_id, text, done, position, created_at FROM todos WHERE id = ?").get(todoId) as Todo) ||
+    (db.query(`SELECT ${TODO_COLS} FROM todos WHERE id = ?`).get(todoId) as Todo) ||
     null
   );
+}
+
+/** Unchecked to-dos that have never been sent to Ascent — the send candidates. */
+export function listSendableTodos(db: Database, recordingId: string): Todo[] {
+  return db
+    .query(
+      `SELECT ${TODO_COLS} FROM todos WHERE recording_id = ? AND done = 0 AND (ascent_task_id IS NULL OR ascent_task_id = '') ORDER BY position ASC, created_at ASC`
+    )
+    .all(recordingId) as Todo[];
 }
 
 /**
@@ -197,6 +218,13 @@ export function mergeTodos(db: Database, recordingId: string, texts: string[]): 
 
 export function setTodoDone(db: Database, todoId: string, done: 0 | 1): Todo | null {
   const res = db.prepare("UPDATE todos SET done = ? WHERE id = ?").run(done, todoId);
+  if (res.changes === 0) return null;
+  return getTodo(db, todoId);
+}
+
+/** Mark a to-do as sent to Ascent by recording the Ascent task id. */
+export function setTodoAscentId(db: Database, todoId: string, ascentTaskId: string): Todo | null {
+  const res = db.prepare("UPDATE todos SET ascent_task_id = ? WHERE id = ?").run(ascentTaskId, todoId);
   if (res.changes === 0) return null;
   return getTodo(db, todoId);
 }

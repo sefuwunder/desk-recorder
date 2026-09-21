@@ -7,11 +7,15 @@ import {
   openDb, listRecordings, getRecording, insertRecording,
   updateRecording, deleteRecording, distinctTags, setTranscriptionState,
   listTodos, getTodo, mergeTodos, setTodoDone, deleteTodo,
+  listSendableTodos, setTodoAscentId,
 } from "./db.ts";
 import {
   isAvailable, getTranscribeStatus, isValidWav, transcribeFile,
 } from "./whisper.ts";
 import { extractTodos } from "./todos.ts";
+import {
+  ascentBase, findOrCreateProject, createAscentTask, AscentError,
+} from "./ascent.ts";
 
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // ~25MB
 const AUDIO_EXTS = [".webm", ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".mp4", ".flac"];
@@ -233,6 +237,34 @@ export function buildApp(opts: AppOptions) {
       if (!rec) return json({ error: "not found" }, 404);
       const { added } = mergeTodos(db, rec.id, extractTodos(rec.transcript || ""));
       return json({ todos: listTodos(db, rec.id), added });
+    }
+    // ---- API: send a recording's open, never-sent to-dos to Ascent.
+    // Explicit per click — no auto-sync. Find-or-creates the "Desk Recorder"
+    // project in Ascent, creates one task per to-do, and records the Ascent
+    // task id so a re-click only sends new items.
+    const tdSend = path.match(/^\/api\/recordings\/([^/]+)\/todos\/send-to-ascent$/);
+    if (tdSend && method === "POST") {
+      const rec = getRecording(db, tdSend[1]);
+      if (!rec) return json({ error: "not found" }, 404);
+      const pending = listSendableTodos(db, rec.id);
+      const base = ascentBase();
+      try {
+        const project = await findOrCreateProject(base);
+        let sent = 0;
+        // Sequential so a mid-run failure leaves a clean resume point:
+        // sent items are marked, the error names how many went through.
+        for (const t of pending) {
+          const created = await createAscentTask(
+            base, project.id, t.text, `From desk recorder: “${rec.title}”`
+          );
+          setTodoAscentId(db, t.id, created.id);
+          sent++;
+        }
+        return json({ todos: listTodos(db, rec.id), sent, project });
+      } catch (e: unknown) {
+        const msg = e instanceof AscentError ? e.message : String(e);
+        return json({ error: msg, todos: listTodos(db, rec.id) }, 502);
+      }
     }
     const tdOne = path.match(/^\/api\/todos\/([^/]+)$/);
     if (tdOne) {

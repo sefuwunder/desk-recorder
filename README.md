@@ -47,6 +47,7 @@ Env: `PORT` (default 3010), `DATA_DIR` (default `./data`).
 - `POST /api/recordings/:id/transcribe` — 202, transcribes in the background (WAV only); recording gains `transcribe_status` (`idle|queued|working|done|error`) + `transcribe_error`
 - `GET /api/recordings/:id/todos` — per-recording to-do list, in extraction order
 - `POST /api/recordings/:id/todos/extract` — re-run extraction on demand (`{todos, added}`; merges, never duplicates, preserves done states)
+- `POST /api/recordings/:id/todos/send-to-ascent` — send open, never-sent to-dos to Ascent (see below; `{todos, sent, project}`)
 - `PATCH /api/todos/:todoId` — `{done: 0|1}` toggles a to-do
 - `DELETE /api/todos/:todoId` — removes a to-do
 - `GET /api/tags` — distinct tags
@@ -72,6 +73,20 @@ adds new items but never duplicates or resets items you've checked off.
 To-dos are stored in a `todos` SQLite table and deleted with their recording.
 There's no manual add, no due dates, no export, and no cross-recording list —
 deliberately small surface, easy to extend later.
+
+## Send to-dos to Ascent
+
+The To-dos tab has a **Send to Ascent** button. Clicking it pushes the
+recording's *open, never-sent* to-dos into [Ascent](https://github.com/sefuwunder/ascent)
+under a project named **"Desk Recorder"** (created on first send, reused after).
+One Ascent task is created per to-do, with a note linking back to the
+recording's title. Sending is explicit per click — there is no auto-sync.
+
+Each sent to-do records its Ascent task id (`ascent_task_id`), so clicking the
+button again only sends new items; already-checked items are never sent. If
+Ascent isn't reachable, the button says so plainly with the URL it tried.
+Ascent runs at `http://127.0.0.1:3004` by default; override with the
+`ASCENT_URL` environment variable when starting desk-recorder.
 
 ## Tests
 

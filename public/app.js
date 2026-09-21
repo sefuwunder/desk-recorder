@@ -707,6 +707,18 @@
       span.className = "txt";
       span.textContent = t.text;
       span.addEventListener("click", () => cb.click());
+      if (t.ascent_task_id) {
+        var sent = document.createElement("span");
+        sent.className = "sent-tag";
+        sent.textContent = "in Ascent";
+        sent.title = "sent to Ascent";
+        row.appendChild(cb);
+        row.appendChild(span);
+        row.appendChild(sent);
+      } else {
+        row.appendChild(cb);
+        row.appendChild(span);
+      }
       var del = document.createElement("button");
       del.className = "todo-del";
       del.textContent = "×";
@@ -717,8 +729,6 @@
         state.todos = state.todos.filter((x) => x.id !== t.id);
         renderTodos();
       });
-      row.appendChild(cb);
-      row.appendChild(span);
       row.appendChild(del);
       todoList.appendChild(row);
     });
@@ -740,6 +750,28 @@
     } finally {
       btnExtractTodos.disabled = false;
       btnExtractTodos.textContent = old;
+    }
+  });
+
+  /* ---------------- send to-dos to Ascent (explicit, per click) ---------------- */
+  btnSendAscent.addEventListener("click", async () => {
+    var rec = current();
+    if (!rec) return;
+    btnSendAscent.disabled = true;
+    var old = btnSendAscent.textContent;
+    btnSendAscent.textContent = "Sending…";
+    try {
+      var data = await POST("/api/recordings/" + rec.id + "/todos/send-to-ascent");
+      state.todos = data.todos || [];
+      renderTodos();
+      todoHint.textContent = data.sent
+        ? "sent " + data.sent + " to Ascent ✓"
+        : "nothing new to send";
+    } catch (e) {
+      showNotice("<strong>Send to Ascent failed:</strong> " + esc(e.message));
+    } finally {
+      btnSendAscent.disabled = false;
+      btnSendAscent.textContent = old;
     }
   });
 
