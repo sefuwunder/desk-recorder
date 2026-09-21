@@ -1,6 +1,7 @@
 // desk-recorder: HTTP app factory (testable) + static file serving.
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import {
   openDb, listRecordings, getRecording, insertRecording,
@@ -36,6 +37,7 @@ export interface AppOptions {
 export function buildApp(opts: AppOptions) {
   const dataDir = opts.dataDir;
   const dir = audioDir(dataDir);
+  mkdirSync(dir, { recursive: true }); // data/ is gitignored; create it on first run
   const db = openDb(opts.dbPath || join(dataDir, "desk-recorder.db"));
 
   async function handle(req: Request): Promise<Response> {
