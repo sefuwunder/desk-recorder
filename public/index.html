@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desk Recorder — Executive Voice Notes</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%23e9e6dd' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23e8a33d'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wordmark">Desk Recorder <span class="dot">●</span></div>
+  <div class="date" id="topDate"></div>
+</header>
+
+<main class="layout">
+  <div class="deck-col">
+
+    <section class="deck-panel" aria-label="Tape deck">
+      <svg class="deck-svg" id="deckSvg" viewBox="0 0 760 340" role="img" aria-label="Reel to reel tape mechanism">
+        <!-- FX block (decorative, after the reference drawing) -->
+        <rect class="ln" x="14" y="196" width="46" height="30" />
+        <text x="37" y="217" text-anchor="middle" font-size="14">FX</text>
+        <polyline class="ln-dim" points="14,248 20,236 26,248 32,236 38,248 44,236 50,248 56,236 62,248" />
+        <circle class="ln-dim" cx="20" cy="262" r="2.4" />
+        <circle class="ln-dim" cx="34" cy="262" r="2.4" />
+        <circle class="ln-dim" cx="48" cy="262" r="2.4" />
+
+        <!-- timecode -->
+        <circle class="rec-dot" id="recDot" cx="292" cy="52" r="6" />
+        <text id="timecodeText" x="380" y="64" text-anchor="middle">00:00:00</text>
+        <g class="ln-dim">
+          <line x1="330" y1="86" x2="330" y2="96"/><line x1="348" y1="86" x2="348" y2="96"/>
+          <line x1="366" y1="86" x2="366" y2="96"/><line x1="384" y1="86" x2="384" y2="96"/>
+          <line x1="402" y1="86" x2="402" y2="96"/><line x1="420" y1="86" x2="420" y2="96"/>
+        </g>
+
+        <!-- left reel -->
+        <g id="reelL" class="reel">
+          <circle class="ln" cx="170" cy="150" r="105" />
+          <circle class="ln-dim" id="fillL" cx="170" cy="150" r="82" />
+          <g class="ln">
+            <line x1="170" y1="150" x2="170" y2="72"/>
+            <line x1="170" y1="150" x2="237" y2="189"/>
+            <line x1="170" y1="150" x2="103" y2="189"/>
+          </g>
+          <circle class="ln" cx="170" cy="150" r="17" />
+          <circle class="ln-dim" cx="170" cy="150" r="6" />
+        </g>
+
+        <!-- right reel -->
+        <g id="reelR" class="reel">
+          <circle class="ln" cx="590" cy="150" r="105" />
+          <circle class="ln-dim" id="fillR" cx="590" cy="150" r="30" />
+          <g class="ln">
+            <line x1="590" y1="150" x2="590" y2="72"/>
+            <line x1="590" y1="150" x2="657" y2="189"/>
+            <line x1="590" y1="150" x2="523" y2="189"/>
+          </g>
+          <circle class="ln" cx="590" cy="150" r="17" />
+          <circle class="ln-dim" cx="590" cy="150" r="6" />
+        </g>
+
+        <!-- tape path -->
+        <path class="ln" id="tapePath" d="M 170 255 L 170 272 L 590 272 L 590 255" />
+        <circle class="ln" cx="300" cy="272" r="10" />
+        <circle class="ln-dim" cx="300" cy="272" r="3" />
+        <rect class="ln" x="366" y="260" width="28" height="24" />
+        <circle class="ln" cx="460" cy="272" r="10" />
+        <circle class="ln-dim" cx="460" cy="272" r="3" />
+
+        <!-- VU meters -->
+        <text x="716" y="46" text-anchor="middle" font-size="11" fill="#8f8b81">VU</text>
+        <rect class="meter-bg" x="700" y="60" width="9" height="170" />
+        <rect class="meter-bg" x="722" y="60" width="9" height="170" />
+        <rect class="meter-fill" id="meterL" x="700" y="230" width="9" height="0" />
+        <rect class="meter-fill" id="meterR" x="722" y="230" width="9" height="0" />
+      </svg>
+
+      <div class="transport">
+        <button class="tbtn rec" id="btnRecord" title="Record" aria-label="Record">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>
+        </button>
+        <button class="tbtn" id="btnStop" title="Stop" aria-label="Stop" disabled>
+          <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12"/></svg>
+        </button>
+        <button class="tbtn" id="btnPlay" title="Play" aria-label="Play" disabled>
+          <svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>
+        </button>
+        <span class="tlabel">TRANSPORT</span>
+        <span class="spacer"></span>
+        <span class="statusline" id="statusLine">READY</span>
+      </div>
+
+      <div class="scrubber">
+        <div class="scrub-track" id="scrubTrack" title="Scrub timeline">
+          <div class="scrub-ticks"></div>
+          <div class="scrub-playhead" id="scrubHead" style="left:0%"></div>
+        </div>
+        <div class="scrub-meta"><span id="scrubCur">00:00</span><span id="scrubTot">00:00</span></div>
+      </div>
+
+      <div class="readout" id="readout">
+        <div class="cap">TAPE READOUT · LIVE TRANSCRIPT</div>
+        <div class="interim" id="interimText"></div>
+      </div>
+      <div class="notice" id="srNotice"></div>
+    </section>
+
+    <section class="detail" id="detailPanel" aria-label="Voice note detail" hidden>
+      <div class="detail-head">
+        <input class="detail-title" id="detailTitle" value="" aria-label="Note title">
+        <span class="detail-meta" id="detailMeta"></span>
+      </div>
+      <div class="tabs" role="tablist">
+        <button data-tab="transcript" class="on" role="tab">Transcript</button>
+        <button data-tab="notes" role="tab">Notes · Edit</button>
+        <button data-tab="preview" role="tab">Notes · Preview</button>
+      </div>
+      <div id="tab-transcript">
+        <textarea class="edit" id="transcriptEdit" aria-label="Transcript editor"></textarea>
+      </div>
+      <div id="tab-notes" hidden>
+        <textarea class="edit" id="notesEdit" aria-label="Markdown notes editor" placeholder="# Notes&#10;&#10;- markdown supported"></textarea>
+      </div>
+      <div id="tab-preview" hidden>
+        <div class="preview" id="notesPreview"></div>
+      </div>
+      <div class="tagrow">
+        <span class="cap">TAGS</span>
+        <span id="tagList"></span>
+        <input class="taginput" id="tagInput" placeholder="+ add tag" aria-label="Add tag">
+      </div>
+      <div class="actions">
+        <button class="btn" id="btnSave">Save changes</button>
+        <button class="btn" id="btnExport">Export .md</button>
+        <button class="btn danger" id="btnDelete">Delete note</button>
+      </div>
+    </section>
+
+  </div>
+
+  <aside class="sidebar" aria-label="Voice notes">
+    <h2>VOICE NOTES <span class="count" id="noteCount"></span></h2>
+    <input class="search" id="searchInput" placeholder="Search transcripts &amp; notes…" aria-label="Search notes">
+    <div class="chips" id="tagChips"></div>
+    <div class="now-rec" id="nowRec"><div class="t">● RECORDING…</div></div>
+    <div class="notes" id="notesList"></div>
+  </aside>
+</main>
+
+<footer class="footer">DESK RECORDER · REEL-TO-REEL DESK UNIT · LOCAL ONLY</footer>
+
+<script src="/lib.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
