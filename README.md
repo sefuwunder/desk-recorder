@@ -45,7 +45,33 @@ Env: `PORT` (default 3010), `DATA_DIR` (default `./data`).
 - `POST /api/transcript/:id` — `{transcript}` saves the final client transcript
 - `GET /api/transcribe/status` — `{available, model, binary}` (paths never exposed)
 - `POST /api/recordings/:id/transcribe` — 202, transcribes in the background (WAV only); recording gains `transcribe_status` (`idle|queued|working|done|error`) + `transcribe_error`
+- `GET /api/recordings/:id/todos` — per-recording to-do list, in extraction order
+- `POST /api/recordings/:id/todos/extract` — re-run extraction on demand (`{todos, added}`; merges, never duplicates, preserves done states)
+- `PATCH /api/todos/:todoId` — `{done: 0|1}` toggles a to-do
+- `DELETE /api/todos/:todoId` — removes a to-do
 - `GET /api/tags` — distinct tags
+
+## To-dos from transcripts
+
+When a transcription finishes (offline whisper or the browser-finalized text),
+the server runs a **deterministic, fully local heuristic** (`src/todos.ts`) over
+the transcript and files the results as a checkable per-recording list in the
+new **To-dos** tab — no LLM, no network.
+
+The extractor sentence-splits the transcript and keeps sentences that look
+actionable: imperatives at the start ("call", "email", "schedule", "finish", …),
+or commitment phrases ("need to", "have to", "must", "let's", "don't forget",
+"remind me", "action item", "to-do", "follow up", "we should", …). Spoken
+filler ("um", "so", "first,", "then") is stripped, each item is truncated to
+140 chars, duplicates are dropped, and questions ("Should we…?") are never
+treated as commitments. It's conservative on purpose: it would rather miss a
+borderline item than flood the list with false positives.
+
+Extraction is **merge-only**: re-transcribing (or hitting "Extract to-dos")
+adds new items but never duplicates or resets items you've checked off.
+To-dos are stored in a `todos` SQLite table and deleted with their recording.
+There's no manual add, no due dates, no export, and no cross-recording list —
+deliberately small surface, easy to extend later.
 
 ## Tests
 

@@ -28,6 +28,7 @@
     tag: "",
     transport: "idle", // idle | recording | playing
     detailTab: "transcript",
+    todos: [],
   };
 
   /* ---------------- dom ---------------- */
@@ -45,6 +46,8 @@
   var transcriptEdit = $("transcriptEdit"), notesEdit = $("notesEdit"), notesPreview = $("notesPreview");
   var tagList = $("tagList"), tagInput = $("tagInput");
   var btnTranscribe = $("btnTranscribe"), sttPill = $("sttPill"), sttNotice = $("sttNotice");
+  var todoList = $("todoList"), todoCount = $("todoCount");
+  var btnExtractTodos = $("btnExtractTodos"), todoHint = $("todoHint");
 
   $("topDate").textContent = new Date().toLocaleDateString(undefined, {
     weekday: "short", month: "short", day: "numeric", year: "numeric",
@@ -514,6 +517,7 @@
         if (rec.transcribe_status === "done" || rec.transcribe_status === "error") {
           clearInterval(transcribeTimer);
           renderNotes();
+          if (rec.transcribe_status === "done") loadTodos(state.currentId);
         }
       } catch (e) { clearInterval(transcribeTimer); }
     }, 2000);
@@ -607,6 +611,7 @@
     renderTagRow(rec);
     renderSTT(rec);
     showTab(state.detailTab);
+    loadTodos(rec.id); // keeps the To-dos badge fresh regardless of active tab
   }
 
   function renderTagRow(rec) {
@@ -642,13 +647,100 @@
     $("tab-transcript").hidden = name !== "transcript";
     $("tab-notes").hidden = name !== "notes";
     $("tab-preview").hidden = name !== "preview";
+    $("tab-todos").hidden = name !== "todos";
     if (name === "preview") notesPreview.innerHTML = L.renderMarkdown(notesEdit.value);
+    if (name === "todos") loadTodos(state.currentId);
   }
   document.querySelectorAll(".tabs button").forEach((b) =>
     b.addEventListener("click", () => showTab(b.dataset.tab))
   );
   notesEdit.addEventListener("input", () => {
     if (state.detailTab === "preview") notesPreview.innerHTML = L.renderMarkdown(notesEdit.value);
+  });
+
+  /* ---------------- to-dos (deterministic extraction from the transcript) ---------------- */
+  async function loadTodos(id) {
+    if (!id) { state.todos = []; renderTodos(); return; }
+    try {
+      var data = await GET("/api/recordings/" + id + "/todos");
+      state.todos = data.todos || [];
+    } catch (e) { state.todos = []; }
+    renderTodos();
+  }
+
+  function renderTodos() {
+    var rec = current();
+    todoList.innerHTML = "";
+    todoCount.textContent = state.todos.length ? String(state.todos.length) : "";
+    todoCount.classList.toggle("has", state.todos.length > 0);
+    if (!state.todos.length) {
+      var d = document.createElement("div");
+      d.className = "todo-empty";
+      d.textContent = (rec && rec.transcript)
+        ? "No to-dos found in this transcript. Hit “Extract to-dos” to scan it again."
+        : "To-dos appear here after this note is transcribed.";
+      todoList.appendChild(d);
+      todoHint.textContent = "";
+      return;
+    }
+    var open = state.todos.filter((t) => !t.done).length;
+    todoHint.textContent = open ? open + " open" : "all done ✓";
+    state.todos.forEach((t) => {
+      var row = document.createElement("div");
+      row.className = "todo" + (t.done ? " done" : "");
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!t.done;
+      cb.setAttribute("aria-label", "mark to-do done");
+      cb.addEventListener("change", async () => {
+        try {
+          var data = await PATCH("/api/todos/" + t.id, { done: cb.checked ? 1 : 0 });
+          t.done = data.todo.done;
+        } catch (e) {
+          cb.checked = !cb.checked;
+          showNotice("<strong>Could not update to-do:</strong> " + esc(e.message));
+          return;
+        }
+        renderTodos();
+      });
+      var span = document.createElement("span");
+      span.className = "txt";
+      span.textContent = t.text;
+      span.addEventListener("click", () => cb.click());
+      var del = document.createElement("button");
+      del.className = "todo-del";
+      del.textContent = "×";
+      del.setAttribute("aria-label", "remove to-do");
+      del.addEventListener("click", async () => {
+        try { await DEL("/api/todos/" + t.id); }
+        catch (e) { showNotice("<strong>Could not remove to-do:</strong> " + esc(e.message)); return; }
+        state.todos = state.todos.filter((x) => x.id !== t.id);
+        renderTodos();
+      });
+      row.appendChild(cb);
+      row.appendChild(span);
+      row.appendChild(del);
+      todoList.appendChild(row);
+    });
+  }
+
+  btnExtractTodos.addEventListener("click", async () => {
+    var rec = current();
+    if (!rec) return;
+    btnExtractTodos.disabled = true;
+    var old = btnExtractTodos.textContent;
+    btnExtractTodos.textContent = "Extracting…";
+    try {
+      var data = await POST("/api/recordings/" + rec.id + "/todos/extract");
+      state.todos = data.todos || [];
+      renderTodos();
+      if (data.added) todoHint.textContent = "added " + data.added + " new";
+    } catch (e) {
+      showNotice("<strong>Extract failed:</strong> " + esc(e.message));
+    } finally {
+      btnExtractTodos.disabled = false;
+      btnExtractTodos.textContent = old;
+    }
   });
 
   detailTitle.addEventListener("change", saveDetail);

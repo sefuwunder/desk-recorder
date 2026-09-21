@@ -6,10 +6,12 @@ import { join, basename } from "node:path";
 import {
   openDb, listRecordings, getRecording, insertRecording,
   updateRecording, deleteRecording, distinctTags, setTranscriptionState,
+  listTodos, getTodo, mergeTodos, setTodoDone, deleteTodo,
 } from "./db.ts";
 import {
   isAvailable, getTranscribeStatus, isValidWav, transcribeFile,
 } from "./whisper.ts";
+import { extractTodos } from "./todos.ts";
 
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // ~25MB
 const AUDIO_EXTS = [".webm", ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".mp4", ".flac"];
@@ -62,6 +64,9 @@ export function buildApp(opts: AppOptions) {
     try {
       const text = await transcribeFile(dataDir, wavPath);
       setTranscriptionState(db, id, "done", text, "");
+      // pull actionable items out of the finished transcript (merge-only:
+      // existing items and their done states are preserved)
+      if (text.trim()) mergeTodos(db, id, extractTodos(text));
     } catch (e) {
       setTranscriptionState(
         db, id, "error", undefined,
@@ -208,7 +213,47 @@ export function buildApp(opts: AppOptions) {
         return json({ error: "transcript must be a string" }, 400);
       }
       const rec = updateRecording(db, tm[1], { transcript: body.transcript });
+      if (rec && body.transcript.trim()) {
+        // browser-finalized transcripts get to-dos too (merge-only)
+        mergeTodos(db, rec.id, extractTodos(body.transcript));
+      }
       return rec ? json({ recording: rec }) : json({ error: "not found" }, 404);
+    }
+
+    // ---- API: per-recording to-dos
+    const tdList = path.match(/^\/api\/recordings\/([^/]+)\/todos$/);
+    if (tdList && method === "GET") {
+      const rec = getRecording(db, tdList[1]);
+      if (!rec) return json({ error: "not found" }, 404);
+      return json({ todos: listTodos(db, rec.id) });
+    }
+    const tdExtract = path.match(/^\/api\/recordings\/([^/]+)\/todos\/extract$/);
+    if (tdExtract && method === "POST") {
+      const rec = getRecording(db, tdExtract[1]);
+      if (!rec) return json({ error: "not found" }, 404);
+      const { added } = mergeTodos(db, rec.id, extractTodos(rec.transcript || ""));
+      return json({ todos: listTodos(db, rec.id), added });
+    }
+    const tdOne = path.match(/^\/api\/todos\/([^/]+)$/);
+    if (tdOne) {
+      if (method === "PATCH") {
+        let body: Record<string, unknown>;
+        try {
+          body = await req.json();
+        } catch {
+          return json({ error: "expected JSON body" }, 400);
+        }
+        const done =
+          body.done === 1 || body.done === true ? 1 :
+          body.done === 0 || body.done === false ? 0 : null;
+        if (done === null) return json({ error: "done must be 0 or 1" }, 400);
+        const todo = setTodoDone(db, tdOne[1], done);
+        return todo ? json({ todo }) : json({ error: "not found" }, 404);
+      }
+      if (method === "DELETE") {
+        const todo = deleteTodo(db, tdOne[1]);
+        return todo ? json({ ok: true }) : json({ error: "not found" }, 404);
+      }
     }
 
     // ---- static

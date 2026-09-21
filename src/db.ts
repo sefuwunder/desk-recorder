@@ -2,6 +2,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 export interface Recording {
   id: string;
@@ -17,6 +18,15 @@ export interface Recording {
   updated_at: number;
   transcribe_status: string; // idle | queued | working | done | error
   transcribe_error: string;
+}
+
+export interface Todo {
+  id: string;
+  recording_id: string;
+  text: string;
+  done: number; // 0 | 1
+  position: number;
+  created_at: number;
 }
 
 export function openDb(path: string): Database {
@@ -49,6 +59,18 @@ export function openDb(path: string): Database {
   if (!have.has("transcribe_error")) {
     db.exec("ALTER TABLE recordings ADD COLUMN transcribe_error TEXT NOT NULL DEFAULT ''");
   }
+  // per-recording to-do items, extracted deterministically from transcripts
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS todos (
+      id TEXT PRIMARY KEY,
+      recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      done INTEGER NOT NULL DEFAULT 0,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_todos_recording ON todos(recording_id, position);
+  `);
   return db;
 }
 
@@ -127,8 +149,63 @@ export function updateRecording(
 export function deleteRecording(db: Database, id: string): Recording | null {
   const rec = getRecording(db, id);
   if (!rec) return null;
+  db.prepare("DELETE FROM todos WHERE recording_id = ?").run(id);
   db.prepare("DELETE FROM recordings WHERE id = ?").run(id);
   return rec;
+}
+
+/* ---------------- to-dos ---------------- */
+
+export function listTodos(db: Database, recordingId: string): Todo[] {
+  return db
+    .query("SELECT id, recording_id, text, done, position, created_at FROM todos WHERE recording_id = ? ORDER BY position ASC, created_at ASC")
+    .all(recordingId) as Todo[];
+}
+
+export function getTodo(db: Database, todoId: string): Todo | null {
+  return (
+    (db.query("SELECT id, recording_id, text, done, position, created_at FROM todos WHERE id = ?").get(todoId) as Todo) ||
+    null
+  );
+}
+
+/**
+ * Add extracted items for a recording, skipping any already present
+ * (case-insensitive). Existing done states are preserved. Returns the
+ * number of items added.
+ */
+export function mergeTodos(db: Database, recordingId: string, texts: string[]): { added: number } {
+  const existing = new Set(listTodos(db, recordingId).map((t) => t.text.toLowerCase().trim()));
+  const row = db.query("SELECT COALESCE(MAX(position), -1) AS m FROM todos WHERE recording_id = ?").get(recordingId) as { m: number };
+  let pos = row.m;
+  let added = 0;
+  const stmt = db.prepare(
+    "INSERT INTO todos (id, recording_id, text, done, position, created_at) VALUES (?, ?, ?, 0, ?, ?)"
+  );
+  for (const raw of texts) {
+    const text = raw.trim().slice(0, 500);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (existing.has(key)) continue;
+    existing.add(key);
+    pos += 1;
+    stmt.run(randomUUID(), recordingId, text, pos, Date.now());
+    added += 1;
+  }
+  return { added };
+}
+
+export function setTodoDone(db: Database, todoId: string, done: 0 | 1): Todo | null {
+  const res = db.prepare("UPDATE todos SET done = ? WHERE id = ?").run(done, todoId);
+  if (res.changes === 0) return null;
+  return getTodo(db, todoId);
+}
+
+export function deleteTodo(db: Database, todoId: string): Todo | null {
+  const todo = getTodo(db, todoId);
+  if (!todo) return null;
+  db.prepare("DELETE FROM todos WHERE id = ?").run(todoId);
+  return todo;
 }
 
 export type TranscribeStatus = "idle" | "queued" | "working" | "done" | "error";

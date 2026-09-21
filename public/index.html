@@ -133,6 +133,7 @@ document.documentElement.setAttribute("data-theme",t);}catch(e){document.documen
         <button data-tab="transcript" class="on" role="tab">Transcript</button>
         <button data-tab="notes" role="tab">Notes · Edit</button>
         <button data-tab="preview" role="tab">Notes · Preview</button>
+        <button data-tab="todos" role="tab">To-dos <span class="tab-badge" id="todoCount"></span></button>
       </div>
       <div id="tab-transcript">
         <div class="sttrow">
@@ -146,6 +147,13 @@ document.documentElement.setAttribute("data-theme",t);}catch(e){document.documen
       </div>
       <div id="tab-preview" hidden>
         <div class="preview" id="notesPreview"></div>
+      </div>
+      <div id="tab-todos" hidden>
+        <div class="todo-head">
+          <button class="btn small" id="btnExtractTodos">Extract to-dos</button>
+          <span class="todo-hint" id="todoHint"></span>
+        </div>
+        <div class="todo-list" id="todoList"></div>
       </div>
       <div class="tagrow">
         <span class="cap">TAGS</span>
