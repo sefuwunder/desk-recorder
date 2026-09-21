@@ -16,6 +16,8 @@ An executive desk recorder for capturing and organizing transcribed voice notes 
 
 Respects `prefers-reduced-motion` (reels still, meters static). Responsive down to 390px.
 
+**Themes** — Tokyo Night (dark) and Tokyo Dawn (light), toggled from the moon/sun switch in the topbar. Choice persists in `localStorage` (`dr-theme`); with no saved choice the OS `prefers-color-scheme` decides. The theme is applied before first paint, so there's no flash.
+
 ## Offline transcription setup
 
 ```sh

@@ -4,13 +4,29 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Desk Recorder — Executive Voice Notes</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%23e9e6dd' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23e8a33d'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%237dcfff' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23ff9e64'/%3E%3C/svg%3E">
+<script>
+/* apply persisted theme before first paint (no flash) */
+(function(){try{var k="dr-theme",t=localStorage.getItem(k);
+if(t!=="tokyo-night"&&t!=="tokyo-dawn"){t=(window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches)?"tokyo-dawn":"tokyo-night";}
+document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","tokyo-night");}})();
+</script>
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 
 <header class="topbar">
-  <div class="wordmark">Desk Recorder <span class="dot">●</span></div>
+  <div class="top-left">
+    <div class="wordmark">Desk Recorder <span class="dot">●</span></div>
+    <div class="theme-switch" role="group" aria-label="Color theme">
+      <button class="ts-btn" id="themeNight" title="Tokyo Night" aria-label="Tokyo Night theme" aria-pressed="true">
+        <svg viewBox="0 0 24 24"><path d="M20.4 14.2A8.8 8.8 0 0 1 9.8 3.6a.6.6 0 0 0-.8-.8 10.2 10.2 0 1 0 12.2 12.2.6.6 0 0 0-.8-.8z"/></svg>
+      </button>
+      <button class="ts-btn" id="themeDawn" title="Tokyo Dawn" aria-label="Tokyo Dawn theme" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.6"/><g stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="2.4" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.6"/><line x1="2.4" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.6" y2="12"/><line x1="5.2" y1="5.2" x2="7" y2="7"/><line x1="17" y1="17" x2="18.8" y2="18.8"/><line x1="5.2" y1="18.8" x2="7" y2="17"/><line x1="17" y1="7" x2="18.8" y2="5.2"/></g></svg>
+      </button>
+    </div>
+  </div>
   <div class="date" id="topDate"></div>
 </header>
 
@@ -71,7 +87,7 @@
         <circle class="ln-dim" cx="460" cy="272" r="3" />
 
         <!-- VU meters -->
-        <text x="716" y="46" text-anchor="middle" font-size="11" fill="#8f8b81">VU</text>
+        <text class="vu-label" x="716" y="46" text-anchor="middle" font-size="11">VU</text>
         <rect class="meter-bg" x="700" y="60" width="9" height="170" />
         <rect class="meter-bg" x="722" y="60" width="9" height="170" />
         <rect class="meter-fill" id="meterL" x="700" y="230" width="9" height="0" />

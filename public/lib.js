@@ -164,7 +164,17 @@
     return new Uint8Array(buf);
   }
 
-  var DeskLib = { formatTimecode: formatTimecode, formatDuration: formatDuration, renderMarkdown: renderMarkdown, escapeHtml: escapeHtml, downsampleTo16k: downsampleTo16k, encodeWavPcm16: encodeWavPcm16 };
+  /** Color themes. Stored values are exactly "tokyo-night" / "tokyo-dawn". */
+  var THEMES = ["tokyo-night", "tokyo-dawn"];
+
+  /** Resolve the effective theme: a valid stored value wins; otherwise the
+      OS color-scheme preference decides (light -> dawn, else night). */
+  function resolveTheme(stored, prefersLight) {
+    if (stored === "tokyo-night" || stored === "tokyo-dawn") return stored;
+    return prefersLight ? "tokyo-dawn" : "tokyo-night";
+  }
+
+  var DeskLib = { formatTimecode: formatTimecode, formatDuration: formatDuration, renderMarkdown: renderMarkdown, escapeHtml: escapeHtml, downsampleTo16k: downsampleTo16k, encodeWavPcm16: encodeWavPcm16, resolveTheme: resolveTheme, THEMES: THEMES };
   if (typeof window !== "undefined") window.DeskLib = DeskLib;
   if (typeof globalThis !== "undefined") globalThis.DeskLib = DeskLib;
   if (typeof module !== "undefined" && module.exports) module.exports = DeskLib;

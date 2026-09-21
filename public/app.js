@@ -50,6 +50,26 @@
     weekday: "short", month: "short", day: "numeric", year: "numeric",
   }).toUpperCase();
 
+  /* ---------------- theme ---------------- */
+  var themeNightBtn = $("themeNight"), themeDawnBtn = $("themeDawn");
+  function setTheme(t) {
+    var theme = L.resolveTheme(
+      t,
+      window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)").matches : false
+    );
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem("dr-theme", theme); } catch (e) { /* private mode */ }
+    var night = theme === "tokyo-night";
+    themeNightBtn.classList.toggle("on", night);
+    themeDawnBtn.classList.toggle("on", !night);
+    themeNightBtn.setAttribute("aria-pressed", night ? "true" : "false");
+    themeDawnBtn.setAttribute("aria-pressed", !night ? "true" : "false");
+  }
+  themeNightBtn.addEventListener("click", function () { setTheme("tokyo-night"); });
+  themeDawnBtn.addEventListener("click", function () { setTheme("tokyo-dawn"); });
+  // sync buttons with the theme the <head> pre-paint script already applied
+  setTheme(document.documentElement.getAttribute("data-theme"));
+
   /* ---------------- audio engine ---------------- */
   var audioEl = new Audio();
   audioEl.preload = "metadata";
