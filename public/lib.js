@@ -116,7 +116,55 @@
     return html.join("\n");
   }
 
-  var DeskLib = { formatTimecode: formatTimecode, formatDuration: formatDuration, renderMarkdown: renderMarkdown, escapeHtml: escapeHtml };
+  /** Downsample a Float32 mono buffer from sourceRate to 16kHz (linear interpolation).
+      whisper.cpp wants 16kHz mono. Returns a new Float32Array. */
+  function downsampleTo16k(input, sourceRate) {
+    var TARGET = 16000;
+    if (!input || !input.length) return new Float32Array(0);
+    sourceRate = Math.max(1, Math.floor(Number(sourceRate) || 48000));
+    if (sourceRate === TARGET) return Float32Array.from(input);
+    var ratio = sourceRate / TARGET;
+    var outLen = Math.floor(input.length / ratio);
+    var out = new Float32Array(outLen);
+    for (var i = 0; i < outLen; i++) {
+      var pos = i * ratio;
+      var i0 = Math.floor(pos);
+      var i1 = Math.min(i0 + 1, input.length - 1);
+      var frac = pos - i0;
+      out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+    }
+    return out;
+  }
+
+  /** Encode a Float32 mono 16kHz buffer as 16-bit PCM WAV. Returns Uint8Array. */
+  function encodeWavPcm16(mono16k) {
+    var n = mono16k ? mono16k.length : 0;
+    var buf = new ArrayBuffer(44 + n * 2);
+    var v = new DataView(buf);
+    function wstr(off, s) {
+      for (var i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i));
+    }
+    wstr(0, "RIFF");
+    v.setUint32(4, 36 + n * 2, true);
+    wstr(8, "WAVE");
+    wstr(12, "fmt ");
+    v.setUint32(16, 16, true);   // fmt chunk size
+    v.setUint16(20, 1, true);    // PCM
+    v.setUint16(22, 1, true);    // mono
+    v.setUint32(24, 16000, true);// sample rate
+    v.setUint32(28, 32000, true);// byte rate
+    v.setUint16(32, 2, true);    // block align
+    v.setUint16(34, 16, true);   // bits per sample
+    wstr(36, "data");
+    v.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) {
+      var s = Math.max(-1, Math.min(1, mono16k[i]));
+      v.setInt16(44 + i * 2, Math.round(s * 32767), true);
+    }
+    return new Uint8Array(buf);
+  }
+
+  var DeskLib = { formatTimecode: formatTimecode, formatDuration: formatDuration, renderMarkdown: renderMarkdown, escapeHtml: escapeHtml, downsampleTo16k: downsampleTo16k, encodeWavPcm16: encodeWavPcm16 };
   if (typeof window !== "undefined") window.DeskLib = DeskLib;
   if (typeof globalThis !== "undefined") globalThis.DeskLib = DeskLib;
   if (typeof module !== "undefined" && module.exports) module.exports = DeskLib;

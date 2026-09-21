@@ -1,6 +1,6 @@
 /* desk-recorder client: transport, tape deck animation, real VU meters via
-   WebAudio AnalyserNode, MediaRecorder capture, SpeechRecognition live
-   transcription, notes list, markdown notes. Zero deps. */
+   WebAudio AnalyserNode, AudioWorklet WAV capture, SpeechRecognition live
+   interim text, offline server transcription status. Zero deps. */
 (function () {
   "use strict";
   var L = window.DeskLib;
@@ -44,6 +44,7 @@
   var detailPanel = $("detailPanel"), detailTitle = $("detailTitle"), detailMeta = $("detailMeta");
   var transcriptEdit = $("transcriptEdit"), notesEdit = $("notesEdit"), notesPreview = $("notesPreview");
   var tagList = $("tagList"), tagInput = $("tagInput");
+  var btnTranscribe = $("btnTranscribe"), sttPill = $("sttPill"), sttNotice = $("sttNotice");
 
   $("topDate").textContent = new Date().toLocaleDateString(undefined, {
     weekday: "short", month: "short", day: "numeric", year: "numeric",
@@ -54,9 +55,17 @@
   audioEl.preload = "metadata";
   var actx = null, analyser = null, analyserData = null, mediaSrc = null;
   var meterRAF = 0, clockRAF = 0;
-  var micStream = null, recorder = null, recChunks = [], recStart = 0;
-  var recMime = "";
+  var micStream = null, micSource = null, workletNode = null, wavChunks = [], wavSampleRate = 48000, recStart = 0;
+  var workletRegisteredCtx = null; // AudioWorklet module registration is per-AudioContext; register once
   var recog = null, recogFinal = "", recogWanted = false;
+  var serverSTT = { available: false, model: "", binary: "" };
+
+  /* Inline AudioWorklet: forwards raw Float32 mono chunks to the main thread.
+     A silent gain keeps the node rendering even with no audible output. */
+  var WORKLET_SRC =
+    "class WavCap extends AudioWorkletProcessor{" +
+    "process(i){var c=i[0];if(c&&c[0])this.port.postMessage(c[0].slice(0));return true;}" +
+    "}registerProcessor('wav-cap',WavCap);";
 
   function ensureCtx() {
     if (!actx) {
@@ -189,24 +198,37 @@
     }
     var src = actx.createMediaStreamSource(stream);
     src.connect(analyser);
+    micSource = src;
 
-    recMime = "audio/webm";
-    var mr;
+    // WAV capture: raw mic samples -> worklet -> Float32 chunks on the main thread.
+    // whisper.cpp needs WAV and we ship no ffmpeg, so we record PCM ourselves.
+    // The processor name registers once per AudioContext — re-adding throws.
     try {
-      var mime = "audio/webm;codecs=opus";
-      if (window.MediaRecorder && !MediaRecorder.isTypeSupported(mime)) mime = "audio/webm";
-      mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-      recMime = mr.mimeType || mime;
+      if (!actx.audioWorklet) throw new Error("no audioWorklet");
+      if (workletRegisteredCtx !== actx) {
+        var blobUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "application/javascript" }));
+        try {
+          await actx.audioWorklet.addModule(blobUrl);
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+        workletRegisteredCtx = actx;
+      }
     } catch (e) {
       showNotice("<strong>Recording not supported</strong> in this browser.");
       cleanupMic();
       return;
     }
-    recorder = mr;
-    recChunks = [];
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
-    recorder.onstop = onRecorderStop;
-    try { recorder.start(250); } catch (e) { cleanupMic(); return; }
+    workletNode = new AudioWorkletNode(actx, "wav-cap");
+    wavChunks = [];
+    wavSampleRate = actx.sampleRate || 48000;
+    workletNode.port.onmessage = function (e) { wavChunks.push(e.data); };
+    src.connect(workletNode);
+    // keep the worklet rendering: route through a silent gain to the destination
+    var silent = actx.createGain();
+    silent.gain.value = 0;
+    workletNode.connect(silent);
+    silent.connect(actx.destination);
 
     recogFinal = "";
     interimText.textContent = "";
@@ -221,8 +243,10 @@
 
   function startRecognition() {
     if (!srSupported()) {
-      showNotice("<strong>Live transcription unavailable:</strong> this needs Chrome or Edge. " +
-        "Recording still works — you can type or paste the transcript below.");
+      showNotice(serverSTT.available
+        ? "<strong>Live transcription unavailable</strong> in this browser — offline transcription will transcribe this note automatically after recording."
+        : "<strong>Live transcription unavailable:</strong> this needs Chrome or Edge. " +
+          "Recording still works — you can type or paste the transcript below.");
       return;
     }
     try {
@@ -273,19 +297,30 @@
 
   function cleanupMic() {
     if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    if (workletNode) { try { workletNode.disconnect(); } catch (e) { /* noop */ } workletNode = null; }
+    if (micSource) { try { micSource.disconnect(); } catch (e) { /* noop */ } micSource = null; }
   }
 
   function stopRecording() {
-    if (state.transport !== "recording" || !recorder) return;
+    if (state.transport !== "recording") return;
     stopRecognition();
-    try { recorder.stop(); } catch (e) { onRecorderStop(); }
     cleanupMic();
+    onWavStop();
   }
 
-  async function onRecorderStop() {
-    var blob = new Blob(recChunks, { type: recMime || "audio/webm" });
+  async function onWavStop() {
     var durationMs = Date.now() - recStart;
-    recChunks = [];
+    // concat captured chunks -> downsample to 16kHz mono -> 16-bit PCM WAV
+    var total = 0, i;
+    for (i = 0; i < wavChunks.length; i++) total += wavChunks[i].length;
+    var pcm = new Float32Array(total);
+    var off = 0;
+    for (i = 0; i < wavChunks.length; i++) { pcm.set(wavChunks[i], off); off += wavChunks[i].length; }
+    wavChunks = [];
+    var mono16 = L.downsampleTo16k(pcm, wavSampleRate);
+    var wavBytes = L.encodeWavPcm16(mono16);
+    var blob = new Blob([wavBytes], { type: "audio/wav" });
+
     var interim = interimText.textContent;
     var finalText = (recogFinal + (interim ? " " + interim : "")).trim();
     interimText.textContent = "";
@@ -294,7 +329,7 @@
     resetReels();
     renderNotes();
 
-    if (!blob.size) {
+    if (!blob.size || mono16.length < 1600) { // < 0.1s of audio
       showNotice("<strong>Empty recording</strong> — nothing was captured.");
       return;
     }
@@ -303,13 +338,21 @@
     });
     try {
       var fd = new FormData();
-      fd.append("audio", blob, "note.webm");
+      fd.append("audio", blob, "note.wav");
       fd.append("title", title);
       fd.append("duration_ms", String(durationMs));
       var data = await api("/api/recordings", { method: "POST", body: fd });
-      if (finalText) await POST("/api/transcript/" + data.recording.id, { transcript: finalText });
+      // Browser interim is only the stored transcript when the offline engine is absent;
+      // otherwise the server-side transcript replaces it on completion.
+      if (finalText && !serverSTT.available) {
+        await POST("/api/transcript/" + data.recording.id, { transcript: finalText });
+      }
       await refresh();
       selectRecording(data.recording.id);
+      if (serverSTT.available) pollTranscribe(data.recording.id);
+      else if (!finalText) showNotice("Saved. " + (srSupported()
+        ? "No speech was detected — transcript left empty."
+        : "Tip: set up offline transcription (see footer) for automatic transcripts in this browser."));
     } catch (e) {
       showNotice("<strong>Could not save recording:</strong> " + esc(e.message));
     }
@@ -382,6 +425,79 @@
   scrubTrack.addEventListener("pointerdown", (e) => { scrubbing = true; scrubTrack.setPointerCapture(e.pointerId); scrubTo(e.clientX); });
   scrubTrack.addEventListener("pointermove", (e) => { if (scrubbing) scrubTo(e.clientX); });
   scrubTrack.addEventListener("pointerup", () => { scrubbing = false; });
+
+  /* ---------------- offline transcription (whisper.cpp, server-side) ---------------- */
+  async function checkServerSTT() {
+    try {
+      var s = await GET("/api/transcribe/status");
+      serverSTT.available = !!s.available;
+      serverSTT.model = s.model || "";
+      serverSTT.binary = s.binary || "";
+    } catch (e) { serverSTT.available = false; }
+    if (serverSTT.available) {
+      sttNotice.innerHTML = 'OFFLINE TRANSCRIPTION READY <span class="dim">(' + esc(serverSTT.model) + ")</span>";
+      sttNotice.classList.add("ok");
+    } else {
+      sttNotice.innerHTML = "OFFLINE TRANSCRIPTION NOT SET UP — RUN <code>scripts/setup-transcription.sh</code>";
+      sttNotice.classList.remove("ok");
+    }
+  }
+
+  function renderSTT(rec) {
+    if (!rec) { btnTranscribe.hidden = true; sttPill.hidden = true; return; }
+    var st = rec.transcribe_status || "idle";
+    btnTranscribe.hidden = !serverSTT.available || st === "queued" || st === "working" || !!rec.transcript;
+    if (st === "idle") {
+      sttPill.hidden = true;
+    } else {
+      sttPill.hidden = false;
+      sttPill.className = "stt-pill " + st;
+      sttPill.textContent =
+        st === "queued" ? "Queued" :
+        st === "working" ? "Transcribing…" :
+        st === "done" ? "Transcribed ✓" :
+        "Error" + (rec.transcribe_error ? ": " + rec.transcribe_error : "");
+    }
+  }
+
+  btnTranscribe.addEventListener("click", async () => {
+    var rec = current();
+    if (!rec) return;
+    btnTranscribe.hidden = true;
+    try {
+      await POST("/api/recordings/" + rec.id + "/transcribe");
+      pollTranscribe(rec.id);
+    } catch (e) {
+      showNotice("<strong>Transcribe failed:</strong> " + esc(e.message));
+      renderSTT(current());
+    }
+  });
+
+  var transcribeTimer = 0;
+  function pollTranscribe(id) {
+    clearInterval(transcribeTimer);
+    transcribeTimer = setInterval(async () => {
+      try {
+        var data = await GET("/api/recordings/" + id);
+        var rec = data.recording;
+        if (!rec) { clearInterval(transcribeTimer); return; }
+        var i = state.recordings.findIndex((r) => r.id === id);
+        if (i >= 0) state.recordings[i] = rec;
+        if (state.currentId === id) {
+          renderSTT(rec);
+          // fill the transcript box on completion, unless the user is editing it
+          if ((rec.transcribe_status === "done" || rec.transcribe_status === "error") &&
+              document.activeElement !== transcriptEdit) {
+            if (rec.transcript) transcriptEdit.value = rec.transcript;
+          }
+        }
+        if (rec.transcribe_status === "done" || rec.transcribe_status === "error") {
+          clearInterval(transcribeTimer);
+          renderNotes();
+        }
+      } catch (e) { clearInterval(transcribeTimer); }
+    }, 2000);
+  }
 
   /* ---------------- notes list ---------------- */
   function fmtDate(ts) {
@@ -469,6 +585,7 @@
     transcriptEdit.value = rec.transcript || "";
     notesEdit.value = rec.md_notes || "";
     renderTagRow(rec);
+    renderSTT(rec);
     showTab(state.detailTab);
   }
 
@@ -601,5 +718,10 @@
   };
 
   /* ---------------- init ---------------- */
-  refresh().catch((e) => showNotice("<strong>Could not reach server:</strong> " + esc(e.message)));
+  // Status first: renderSTT needs serverSTT before refresh() auto-selects a note.
+  (async function () {
+    await checkServerSTT();
+    try { await refresh(); }
+    catch (e) { showNotice("<strong>Could not reach server:</strong> " + esc(e.message)); }
+  })();
 })();

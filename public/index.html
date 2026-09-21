@@ -119,6 +119,10 @@
         <button data-tab="preview" role="tab">Notes · Preview</button>
       </div>
       <div id="tab-transcript">
+        <div class="sttrow">
+          <button class="btn small" id="btnTranscribe" hidden>Transcribe offline</button>
+          <span class="stt-pill" id="sttPill" hidden></span>
+        </div>
         <textarea class="edit" id="transcriptEdit" aria-label="Transcript editor"></textarea>
       </div>
       <div id="tab-notes" hidden>
@@ -150,7 +154,7 @@
   </aside>
 </main>
 
-<footer class="footer">DESK RECORDER · REEL-TO-REEL DESK UNIT · LOCAL ONLY</footer>
+<footer class="footer"><span>DESK RECORDER · REEL-TO-REEL DESK UNIT · LOCAL ONLY</span><span class="stt-line" id="sttNotice"></span></footer>
 
 <script src="/lib.js"></script>
 <script src="/app.js"></script>

@@ -243,7 +243,23 @@ textarea.edit:focus { outline: none; border-color: var(--line-dim); }
 .btn:hover { border-color: var(--line); }
 .btn.danger { border-color: #8a4a3d; color: #d98a6f; }
 .btn.danger:hover { border-color: #d98a6f; }
+.btn.small { font-size: 11px; padding: 6px 12px; letter-spacing: 0.08em; }
 .btn.saved-flash { border-color: var(--amber); color: var(--amber); }
+
+/* ---------- offline transcription ---------- */
+.sttrow { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; min-height: 30px; }
+.stt-pill {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase;
+  border: 1px solid var(--line-faint); border-radius: 999px; padding: 3px 12px; color: var(--text-3);
+}
+.stt-pill.queued { border-color: var(--line-dim); color: var(--line-dim); }
+.stt-pill.working { border-color: var(--amber-deep); color: var(--amber); }
+.stt-pill.done { border-color: var(--amber-deep); color: var(--amber); }
+.stt-pill.error { border-color: #8a4a3d; color: #d98a6f; text-transform: none; letter-spacing: 0.02em; }
+.footer { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.stt-line { font-size: 10px; letter-spacing: 0.18em; color: var(--text-3); }
+.stt-line.ok { color: var(--amber); }
+.stt-line code { font-family: var(--mono); font-size: 10px; }
 
 /* ---------- sidebar ---------- */
 .sidebar {

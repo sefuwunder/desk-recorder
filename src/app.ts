@@ -5,8 +5,11 @@ import { mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import {
   openDb, listRecordings, getRecording, insertRecording,
-  updateRecording, deleteRecording, distinctTags,
+  updateRecording, deleteRecording, distinctTags, setTranscriptionState,
 } from "./db.ts";
+import {
+  isAvailable, getTranscribeStatus, isValidWav, transcribeFile,
+} from "./whisper.ts";
 
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // ~25MB
 const AUDIO_EXTS = [".webm", ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".mp4", ".flac"];
@@ -39,6 +42,33 @@ export function buildApp(opts: AppOptions) {
   const dir = audioDir(dataDir);
   mkdirSync(dir, { recursive: true }); // data/ is gitignored; create it on first run
   const db = openDb(opts.dbPath || join(dataDir, "desk-recorder.db"));
+
+  /** Background whisper transcription for one recording. Never throws. */
+  async function runTranscription(id: string): Promise<void> {
+    const rec = getRecording(db, id);
+    if (!rec || rec.transcribe_status === "working") return;
+    const wavPath = join(dir, basename(rec.filename));
+    const f = Bun.file(wavPath);
+    if (!(await f.exists())) {
+      setTranscriptionState(db, id, "error", undefined, "audio file missing");
+      return;
+    }
+    const head = new Uint8Array(await f.slice(0, 12).arrayBuffer());
+    if (!isValidWav(head)) {
+      setTranscriptionState(db, id, "error", undefined, "not a WAV file");
+      return;
+    }
+    setTranscriptionState(db, id, "working");
+    try {
+      const text = await transcribeFile(dataDir, wavPath);
+      setTranscriptionState(db, id, "done", text, "");
+    } catch (e) {
+      setTranscriptionState(
+        db, id, "error", undefined,
+        e instanceof Error ? e.message : "transcription failed"
+      );
+    }
+  }
 
   async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -87,6 +117,14 @@ export function buildApp(opts: AppOptions) {
         md_notes: "",
         tags: "[]",
       });
+      // Auto-transcribe WAV uploads when the offline engine is set up.
+      if (isAvailable(dataDir)) {
+        const head = new Uint8Array(await Bun.file(join(dir, filename)).slice(0, 12).arrayBuffer());
+        if (isValidWav(head)) {
+          setTranscriptionState(db, id, "queued");
+          runTranscription(id).catch(() => {});
+        }
+      }
       return json({ recording: rec }, 201);
     }
 
@@ -129,6 +167,32 @@ export function buildApp(opts: AppOptions) {
         } catch { /* file already gone */ }
         return json({ ok: true });
       }
+    }
+
+    // ---- API: offline transcription status (never exposes paths)
+    if (path === "/api/transcribe/status" && method === "GET") {
+      return json(getTranscribeStatus(dataDir));
+    }
+
+    // ---- API: request offline transcription of one recording
+    const trm = path.match(/^\/api\/recordings\/([^/]+)\/transcribe$/);
+    if (trm && method === "POST") {
+      const rec = getRecording(db, trm[1]);
+      if (!rec) return json({ error: "not found" }, 404);
+      if (!isAvailable(dataDir)) {
+        return json({ error: "offline transcription not set up — run scripts/setup-transcription.sh" }, 503);
+      }
+      const wavPath = join(dir, basename(rec.filename));
+      const f = Bun.file(wavPath);
+      if (!(await f.exists())) return json({ error: "audio file missing" }, 404);
+      const head = new Uint8Array(await f.slice(0, 12).arrayBuffer());
+      if (!isValidWav(head)) return json({ error: "only WAV recordings can be transcribed" }, 400);
+      if (rec.transcribe_status === "queued" || rec.transcribe_status === "working") {
+        return json({ recording: rec }, 202);
+      }
+      setTranscriptionState(db, rec.id, "queued");
+      runTranscription(rec.id).catch(() => {});
+      return json({ recording: getRecording(db, rec.id) }, 202);
     }
 
     // ---- API: save final transcript from the client

@@ -15,6 +15,8 @@ export interface Recording {
   tags: string; // JSON array of strings
   created_at: number;
   updated_at: number;
+  transcribe_status: string; // idle | queued | working | done | error
+  transcribe_error: string;
 }
 
 export function openDb(path: string): Database {
@@ -37,11 +39,21 @@ export function openDb(path: string): Database {
     );
     CREATE INDEX IF NOT EXISTS idx_recordings_created ON recordings(created_at DESC);
   `);
+  // lightweight migration for DBs created before transcription columns existed
+  const have = new Set(
+    (db.query("PRAGMA table_info(recordings)").all() as { name: string }[]).map((c) => c.name)
+  );
+  if (!have.has("transcribe_status")) {
+    db.exec("ALTER TABLE recordings ADD COLUMN transcribe_status TEXT NOT NULL DEFAULT 'idle'");
+  }
+  if (!have.has("transcribe_error")) {
+    db.exec("ALTER TABLE recordings ADD COLUMN transcribe_error TEXT NOT NULL DEFAULT ''");
+  }
   return db;
 }
 
 const PUBLIC_COLS =
-  "id, title, filename, mime, size, duration_ms, transcript, md_notes, tags, created_at, updated_at";
+  "id, title, filename, mime, size, duration_ms, transcript, md_notes, tags, created_at, updated_at, transcribe_status, transcribe_error";
 
 export function listRecordings(db: Database, q?: string, tag?: string): Recording[] {
   const where: string[] = [];
@@ -117,6 +129,34 @@ export function deleteRecording(db: Database, id: string): Recording | null {
   if (!rec) return null;
   db.prepare("DELETE FROM recordings WHERE id = ?").run(id);
   return rec;
+}
+
+export type TranscribeStatus = "idle" | "queued" | "working" | "done" | "error";
+
+/** Set transcription state; optionally store the transcript and/or an error. */
+export function setTranscriptionState(
+  db: Database,
+  id: string,
+  status: TranscribeStatus,
+  transcript?: string,
+  error?: string
+): Recording | null {
+  const sets = ["transcribe_status = ?"];
+  const vals: unknown[] = [status];
+  if (transcript !== undefined) {
+    sets.push("transcript = ?");
+    vals.push(String(transcript));
+  }
+  if (error !== undefined) {
+    sets.push("transcribe_error = ?");
+    vals.push(String(error));
+  }
+  sets.push("updated_at = ?");
+  vals.push(Date.now());
+  vals.push(id);
+  const res = db.prepare(`UPDATE recordings SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  if (res.changes === 0) return null;
+  return getRecording(db, id);
 }
 
 export function distinctTags(db: Database): string[] {
