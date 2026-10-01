@@ -18,6 +18,8 @@ export interface Recording {
   updated_at: number;
   transcribe_status: string; // idle | queued | working | done | error
   transcribe_error: string;
+  archived: number; // 0 | 1
+  abba_note_id: string; // Abba note id once sent there, '' until then
 }
 
 export interface Todo {
@@ -60,6 +62,12 @@ export function openDb(path: string): Database {
   if (!have.has("transcribe_error")) {
     db.exec("ALTER TABLE recordings ADD COLUMN transcribe_error TEXT NOT NULL DEFAULT ''");
   }
+  if (!have.has("archived")) {
+    db.exec("ALTER TABLE recordings ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!have.has("abba_note_id")) {
+    db.exec("ALTER TABLE recordings ADD COLUMN abba_note_id TEXT NOT NULL DEFAULT ''");
+  }
   // per-recording to-do items, extracted deterministically from transcripts
   db.exec(`
     CREATE TABLE IF NOT EXISTS todos (
@@ -84,11 +92,12 @@ export function openDb(path: string): Database {
 }
 
 const PUBLIC_COLS =
-  "id, title, filename, mime, size, duration_ms, transcript, md_notes, tags, created_at, updated_at, transcribe_status, transcribe_error";
+  "id, title, filename, mime, size, duration_ms, transcript, md_notes, tags, created_at, updated_at, transcribe_status, transcribe_error, archived, abba_note_id";
 
-export function listRecordings(db: Database, q?: string, tag?: string): Recording[] {
+export function listRecordings(db: Database, q?: string, tag?: string, includeArchived = false): Recording[] {
   const where: string[] = [];
   const vals: unknown[] = [];
+  if (!includeArchived) where.push("archived = 0");
   if (q && q.trim()) {
     where.push("(title LIKE ? OR transcript LIKE ? OR md_notes LIKE ?)");
     const like = `%${q.trim()}%`;
@@ -131,7 +140,7 @@ export function insertRecording(
 export function updateRecording(
   db: Database,
   id: string,
-  patch: Partial<Pick<Recording, "title" | "transcript" | "md_notes" | "tags" | "duration_ms">>
+  patch: Partial<Pick<Recording, "title" | "transcript" | "md_notes" | "tags" | "duration_ms" | "archived" | "abba_note_id">>
 ): Recording | null {
   const sets: string[] = [];
   const vals: unknown[] = [];
@@ -139,6 +148,8 @@ export function updateRecording(
   if (patch.transcript !== undefined) { sets.push("transcript = ?"); vals.push(String(patch.transcript)); }
   if (patch.md_notes !== undefined) { sets.push("md_notes = ?"); vals.push(String(patch.md_notes)); }
   if (patch.duration_ms !== undefined) { sets.push("duration_ms = ?"); vals.push(Math.max(0, Math.floor(Number(patch.duration_ms) || 0))); }
+  if (patch.archived !== undefined) { sets.push("archived = ?"); vals.push(patch.archived ? 1 : 0); }
+  if (patch.abba_note_id !== undefined) { sets.push("abba_note_id = ?"); vals.push(String(patch.abba_note_id).slice(0, 64)); }
   if (patch.tags !== undefined) {
     const tags = Array.isArray(patch.tags)
       ? [...new Set(patch.tags.map((t) => String(t).trim()).filter(Boolean))].slice(0, 20)

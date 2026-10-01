@@ -391,6 +391,7 @@ textarea.edit:focus { outline: none; border-color: var(--line-dim); }
 }
 .note-item:hover { border-color: var(--line-dim); }
 .note-item.sel { border-color: var(--amber-deep); background: var(--sel-bg); }
+.note-item.archived { opacity: 0.55; }
 .note-item .t { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
 .note-item .m { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); letter-spacing: 0.05em; }
 .note-item .tags { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }

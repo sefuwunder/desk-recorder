@@ -164,6 +164,8 @@ document.documentElement.setAttribute("data-theme",t);}catch(e){document.documen
       <div class="actions">
         <button class="btn" id="btnSave">Save changes</button>
         <button class="btn" id="btnExport">Export .md</button>
+        <button class="btn" id="btnSendAbba">Send to Abba</button>
+        <button class="btn" id="btnArchive">Archive</button>
         <button class="btn danger" id="btnDelete">Delete note</button>
       </div>
     </section>
@@ -173,6 +175,7 @@ document.documentElement.setAttribute("data-theme",t);}catch(e){document.documen
   <aside class="sidebar" aria-label="Voice notes">
     <h2>VOICE NOTES <span class="count" id="noteCount"></span></h2>
     <input class="search" id="searchInput" placeholder="Search transcripts &amp; notes…" aria-label="Search notes">
+    <div class="chips"><button class="chip" id="chipArchived" aria-pressed="false">📦 Archived</button></div>
     <div class="chips" id="tagChips"></div>
     <div class="now-rec" id="nowRec"><div class="t">● RECORDING…</div></div>
     <div class="notes" id="notesList"></div>

@@ -27,6 +27,7 @@
     currentId: null,
     q: "",
     tag: "",
+    showArchived: false,
     transport: "idle", // idle | recording | playing
     detailTab: "transcript",
     todos: [],
@@ -42,7 +43,7 @@
   var scrubCur = $("scrubCur"), scrubTot = $("scrubTot");
   var readout = $("readout"), interimText = $("interimText"), srNotice = $("srNotice");
   var notesList = $("notesList"), noteCount = $("noteCount"), searchInput = $("searchInput");
-  var tagChips = $("tagChips"), nowRec = $("nowRec");
+  var tagChips = $("tagChips"), chipArchived = $("chipArchived"), nowRec = $("nowRec");
   var detailPanel = $("detailPanel"), detailTitle = $("detailTitle"), detailMeta = $("detailMeta");
   var transcriptEdit = $("transcriptEdit"), notesEdit = $("notesEdit"), notesPreview = $("notesPreview");
   var tagList = $("tagList"), tagInput = $("tagInput");
@@ -612,12 +613,13 @@
     }
     state.recordings.forEach((r) => {
       var b = document.createElement("button");
-      b.className = "note-item" + (r.id === state.currentId ? " sel" : "");
+      b.className = "note-item" + (r.id === state.currentId ? " sel" : "") + (r.archived ? " archived" : "");
       var tags = [];
       try { tags = JSON.parse(r.tags || "[]"); } catch (e) { /* ignore */ }
       b.innerHTML =
         '<div class="t">' + esc(r.title || "Untitled") + "</div>" +
         '<div class="m">' + esc(fmtDate(r.created_at)) + " · " + esc(L.formatDuration(r.duration_ms || 0)) +
+        (r.archived ? ' · 📦' : "") +
         (state.transport === "recording" && r.id === state.currentId ? ' · <span style="color:var(--amber)">● REC</span>' : "") + "</div>" +
         (tags.length ? '<div class="tags">' + tags.map((t) => "<span>" + esc(t) + "</span>").join("") + "</div>" : "");
       b.addEventListener("click", () => selectRecording(r.id));
@@ -643,6 +645,7 @@
     var params = new URLSearchParams();
     if (state.q) params.set("q", state.q);
     if (state.tag) params.set("tag", state.tag);
+    if (state.showArchived) params.set("archived", "1");
     var qs = params.toString();
     var data = await GET("/api/recordings" + (qs ? "?" + qs : ""));
     state.recordings = data.recordings || [];
@@ -657,6 +660,13 @@
     if (state.currentId) fillDetail(); else detailPanel.hidden = true;
     btnPlay.disabled = state.transport !== "idle" || !state.currentId;
   }
+
+  chipArchived.addEventListener("click", () => {
+    state.showArchived = !state.showArchived;
+    chipArchived.classList.toggle("on", state.showArchived);
+    chipArchived.setAttribute("aria-pressed", state.showArchived ? "true" : "false");
+    refresh();
+  });
 
   var searchT = 0;
   searchInput.addEventListener("input", () => {
@@ -685,6 +695,7 @@
     notesEdit.value = rec.md_notes || "";
     renderTagRow(rec);
     renderSTT(rec);
+    $("btnArchive").textContent = rec.archived ? "Unarchive" : "Archive";
     showTab(state.detailTab);
     loadTodos(rec.id); // keeps the To-dos badge fresh regardless of active tab
   }
@@ -888,6 +899,47 @@
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  });
+
+  /* ---------------- archive / unarchive ---------------- */
+  $("btnArchive").addEventListener("click", async () => {
+    var rec = current();
+    if (!rec) return;
+    var btn = $("btnArchive");
+    btn.disabled = true;
+    try {
+      var data = await POST("/api/recordings/" + rec.id + (rec.archived ? "/unarchive" : "/archive"));
+      var i = state.recordings.findIndex((r) => r.id === rec.id);
+      if (i >= 0) state.recordings[i] = data.recording;
+      await refresh(); // archived notes leave the list unless the Archived filter is on
+    } catch (e) {
+      showNotice("<strong>Archive failed:</strong> " + esc(e.message));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  /* ---------------- send to Abba (explicit, per click) ---------------- */
+  $("btnSendAbba").addEventListener("click", async () => {
+    var rec = current();
+    if (!rec) return;
+    var btn = $("btnSendAbba");
+    btn.disabled = true;
+    var old = btn.textContent;
+    btn.textContent = "Sending…";
+    try {
+      var data = await POST("/api/recordings/" + rec.id + "/send-to-abba");
+      var i = state.recordings.findIndex((r) => r.id === rec.id);
+      if (i >= 0) state.recordings[i] = data.recording;
+      showNotice(data.already_sent
+        ? "<strong>Already in Abba</strong> — this note was sent before."
+        : "<strong>Sent to Abba</strong> — find it in your Abba notepad ✓");
+    } catch (e) {
+      showNotice("<strong>Send to Abba failed:</strong> " + esc(e.message));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
   });
 
   $("btnDelete").addEventListener("click", async () => {

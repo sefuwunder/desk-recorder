@@ -11,7 +11,7 @@ An executive desk recorder for capturing and organizing transcribed voice notes 
 - **Transcription, two ways** —
   - *Offline (server-side, any browser):* after recording stops, the server transcribes the WAV with a local whisper.cpp binary (`data/whisper/whisper-cli` + model, CPU, no network). The note shows Queued → Transcribing… → done, and the transcript is stored on the recording. Set it up once with `scripts/setup-transcription.sh`.
   - *Live interim (Chrome/Edge only):* browser `SpeechRecognition` streams interim results onto the "tape readout" while recording; when offline transcription is set up, the server transcript becomes the final stored text. Firefox has no Web Speech API, so it relies on the offline path.
-- **Organize** — sidebar list (title, date, duration, tags), full-text search over titles/transcripts/markdown notes, tag filter chips, rename, delete (with confirmation, removes the audio file too), export as `.md`.
+- **Organize** — sidebar list (title, date, duration, tags), full-text search over titles/transcripts/markdown notes, tag filter chips, rename, delete (with confirmation, removes the audio file too), archive (📦 toggle in the sidebar), export as `.md`.
 - **Markdown notes** — per-note editor + rendered preview via a small zero-dep renderer (headings, bold/italic, lists, links, code, quotes). Transcripts are editable too.
 
 Respects `prefers-reduced-motion` (reels still, meters static). Responsive down to 390px.
@@ -39,7 +39,8 @@ Env: `PORT` (default 3010), `DATA_DIR` (default `./data`).
 ## API
 
 - `POST /api/recordings` — multipart (`audio` file ≤25MB, `title`, `duration_ms`) → 201
-- `GET /api/recordings?q=&tag=` — list (full-text search + tag filter)
+- `GET /api/recordings?q=&tag=&archived=1` — list (full-text search + tag filter; archived notes excluded unless `archived=1`)
+- `POST /api/recordings/:id/archive` · `POST /api/recordings/:id/unarchive` — archive bookkeeping (archived notes leave the main list)
 - `GET /api/recordings/:id` · `PATCH /api/recordings/:id` (title, transcript, md_notes, tags, duration_ms) · `DELETE /api/recordings/:id` (removes audio file too)
 - `GET /api/recordings/:id/audio` — streams the audio
 - `POST /api/transcript/:id` — `{transcript}` saves the final client transcript
@@ -48,6 +49,7 @@ Env: `PORT` (default 3010), `DATA_DIR` (default `./data`).
 - `GET /api/recordings/:id/todos` — per-recording to-do list, in extraction order
 - `POST /api/recordings/:id/todos/extract` — re-run extraction on demand (`{todos, added}`; merges, never duplicates, preserves done states)
 - `POST /api/recordings/:id/todos/send-to-ascent` — send open, never-sent to-dos to Ascent (see below; `{todos, sent, project}`)
+- `POST /api/recordings/:id/send-to-abba` — create a note in Abba from the recording (see below; one note per recording, re-click is a no-op)
 - `PATCH /api/todos/:todoId` — `{done: 0|1}` toggles a to-do
 - `DELETE /api/todos/:todoId` — removes a to-do
 - `GET /api/tags` — distinct tags
@@ -87,6 +89,23 @@ button again only sends new items; already-checked items are never sent. If
 Ascent isn't reachable, the button says so plainly with the URL it tried.
 Ascent runs at `http://127.0.0.1:3004` by default; override with the
 `ASCENT_URL` environment variable when starting desk-recorder.
+
+## Send to Abba
+
+The detail panel has a **Send to Abba** button. Clicking it creates a note in
+[Abba](https://github.com/sefuwunder/abba) from the recording: title, transcript
+(or markdown notes when there's no transcript yet), open to-dos as a checklist,
+and a footer with the recording date and duration. The note lands in your
+private Abba notepad (`shared: false`, tag `voice-note`) — share it to the
+circle from Abba if you want.
+
+One note per recording: the Abba note id is stored (`abba_note_id`), so
+clicking again reports "already sent" instead of duplicating. Sending is
+explicit per click — there is no auto-sync.
+
+Abba runs at `http://127.0.0.1:3013` by default (override with `ABBA_URL`).
+Posting requires a member token: set `ABBA_TOKEN` to the `abba_token` value
+from your Abba browser tab's localStorage, then restart desk-recorder.
 
 ## Tests
 

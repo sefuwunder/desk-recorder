@@ -8,6 +8,7 @@ import {
   updateRecording, deleteRecording, distinctTags, setTranscriptionState,
   listTodos, getTodo, mergeTodos, setTodoDone, deleteTodo,
   listSendableTodos, setTodoAscentId, addRecordingBytes,
+  type Todo,
 } from "./db.ts";
 import {
   isAvailable, getTranscribeStatus, isValidWav, transcribeFile,
@@ -16,6 +17,9 @@ import { extractTodos } from "./todos.ts";
 import {
   ascentBase, findOrCreateProject, createAscentTask, AscentError,
 } from "./ascent.ts";
+import {
+  abbaBase, abbaToken, createAbbaNote, AbbaError,
+} from "./abba.ts";
 
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // ~25MB
 export const CHUNK_MAX_BYTES = 4 * 1024 * 1024; // per-chunk cap for streamed uploads
@@ -123,7 +127,12 @@ export function buildApp(opts: AppOptions) {
     // ---- API: collection
     if (path === "/api/recordings" && method === "GET") {
       return json({
-        recordings: listRecordings(db, url.searchParams.get("q") || undefined, url.searchParams.get("tag") || undefined),
+        recordings: listRecordings(
+          db,
+          url.searchParams.get("q") || undefined,
+          url.searchParams.get("tag") || undefined,
+          url.searchParams.get("archived") === "1",
+        ),
       });
     }
     if (path === "/api/tags" && method === "GET") {
@@ -161,6 +170,8 @@ export function buildApp(opts: AppOptions) {
         transcript: "",
         md_notes: "",
         tags: "[]",
+        archived: 0,
+        abba_note_id: "",
       });
       // Auto-transcribe WAV uploads when the offline engine is set up.
       const head = new Uint8Array(await Bun.file(join(dir, filename)).slice(0, 12).arrayBuffer());
@@ -194,6 +205,8 @@ export function buildApp(opts: AppOptions) {
         transcript: "",
         md_notes: "",
         tags: "[]",
+        archived: 0,
+        abba_note_id: "",
       });
       openStreams.add(id);
       return json({ recording: rec }, 201);
@@ -283,6 +296,15 @@ export function buildApp(opts: AppOptions) {
       }
     }
 
+    // ---- API: archive / unarchive (archived notes leave the main list)
+    const archM = path.match(/^\/api\/recordings\/([^/]+)\/(archive|unarchive)$/);
+    if (archM && method === "POST") {
+      const rec = getRecording(db, archM[1]);
+      if (!rec) return json({ error: "not found" }, 404);
+      const updated = updateRecording(db, archM[1], { archived: archM[2] === "archive" ? 1 : 0 });
+      return json({ recording: updated });
+    }
+
     // ---- API: offline transcription status (never exposes paths)
     if (path === "/api/transcribe/status" && method === "GET") {
       return json(getTranscribeStatus(dataDir));
@@ -369,6 +391,49 @@ export function buildApp(opts: AppOptions) {
       } catch (e: unknown) {
         const msg = e instanceof AscentError ? e.message : String(e);
         return json({ error: msg, todos: listTodos(db, rec.id) }, 502);
+      }
+    }
+    // ---- API: send a recording to Abba as a note. Explicit per click;
+    // one note per recording — a re-click reports the existing note.
+    const abbaM = path.match(/^\/api\/recordings\/([^/]+)\/send-to-abba$/);
+    if (abbaM && method === "POST") {
+      const rec = getRecording(db, abbaM[1]);
+      if (!rec) return json({ error: "not found" }, 404);
+      if (rec.abba_note_id) {
+        return json({ recording: rec, already_sent: true, abba_note_id: rec.abba_note_id });
+      }
+      const token = abbaToken();
+      if (!token) {
+        return json({
+          error: "Abba not configured — set ABBA_TOKEN to your Abba member token " +
+            "(copy `abba_token` from your Abba browser tab's localStorage) and restart desk-recorder",
+        }, 503);
+      }
+      const transcript = (rec.transcript || "").trim();
+      const notes = (rec.md_notes || "").trim();
+      if (!transcript && !notes) {
+        return json({ error: "nothing to send — transcribe the recording or add notes first" }, 400);
+      }
+      const parts: string[] = [transcript || notes];
+      const open = listTodos(db, rec.id).filter((t: Todo) => !t.done);
+      if (open.length) {
+        parts.push("**Open to-dos**\n" + open.map((t) => `- [ ] ${t.text}`).join("\n"));
+      }
+      const mins = Math.floor((rec.duration_ms || 0) / 60000);
+      const secs = Math.floor(((rec.duration_ms || 0) % 60000) / 1000);
+      parts.push(`_🎙️ Voice note · ${new Date(rec.created_at).toLocaleString()} · ${mins}:${String(secs).padStart(2, "0")}_`);
+      try {
+        const note = await createAbbaNote(abbaBase(), token, {
+          title: rec.title || "Voice note",
+          body: parts.join("\n\n"),
+          tags: ["voice-note"],
+          shared: false,
+        });
+        const updated = updateRecording(db, rec.id, { abba_note_id: note.id });
+        return json({ recording: updated, abba_note_id: note.id });
+      } catch (e: unknown) {
+        const msg = e instanceof AbbaError ? e.message : String(e);
+        return json({ error: msg }, 502);
       }
     }
     const tdOne = path.match(/^\/api\/todos\/([^/]+)$/);

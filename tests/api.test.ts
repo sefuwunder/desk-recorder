@@ -276,3 +276,114 @@ describe("chunked upload stream", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("archive", () => {
+  test("archived recordings leave the default list, return with ?archived=1", async () => {
+    const { data } = await upload({ audio: audioFile("arch.webm"), title: "To archive" });
+    const id = data.recording.id;
+
+    const ar = await fetch(base + `/api/recordings/${id}/archive`, { method: "POST" });
+    expect(ar.status).toBe(200);
+    expect((await ar.json()).recording.archived).toBe(1);
+
+    const list = await fetch(base + "/api/recordings").then((r) => r.json());
+    expect(list.recordings.some((r) => r.id === id)).toBe(false);
+    const withArch = await fetch(base + "/api/recordings?archived=1").then((r) => r.json());
+    expect(withArch.recordings.some((r) => r.id === id)).toBe(true);
+
+    const un = await fetch(base + `/api/recordings/${id}/unarchive`, { method: "POST" });
+    expect((await un.json()).recording.archived).toBe(0);
+    const list2 = await fetch(base + "/api/recordings").then((r) => r.json());
+    expect(list2.recordings.some((r) => r.id === id)).toBe(true);
+  });
+
+  test("archive unknown id is 404", async () => {
+    const res = await fetch(base + "/api/recordings/nope/archive", { method: "POST" });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("send to Abba", () => {
+  const oldUrl = process.env.ABBA_URL;
+  const oldToken = process.env.ABBA_TOKEN;
+  let abbaHits = [];
+  let abbaServer = null;
+
+  beforeAll(() => {
+    abbaServer = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        const url = new URL(req.url);
+        if (url.pathname === "/api/notes" && req.method === "POST") {
+          const body = await req.json();
+          abbaHits.push({ auth: req.headers.get("authorization"), body });
+          return Response.json({ note: { id: 42, title: body.title } }, { status: 201 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    process.env.ABBA_URL = `http://localhost:${abbaServer.port}`;
+  });
+
+  afterAll(() => {
+    abbaServer.stop();
+    if (oldUrl === undefined) delete process.env.ABBA_URL; else process.env.ABBA_URL = oldUrl;
+    if (oldToken === undefined) delete process.env.ABBA_TOKEN; else process.env.ABBA_TOKEN = oldToken;
+  });
+
+  async function send(id) {
+    const res = await fetch(base + `/api/recordings/${id}/send-to-abba`, { method: "POST" });
+    return { res, data: await res.json().catch(() => ({})) };
+  }
+
+  test("no token -> 503 with setup guidance", async () => {
+    delete process.env.ABBA_TOKEN;
+    const { data } = await upload({ audio: audioFile("ab1.webm"), title: "Abba 1" });
+    await fetch(base + `/api/recordings/${data.recording.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ transcript: "hello abba" }),
+    });
+    const { res, data: sd } = await send(data.recording.id);
+    expect(res.status).toBe(503);
+    expect(sd.error).toMatch(/ABBA_TOKEN/);
+  });
+
+  test("sends transcript as a private note, stores note id, second send is a no-op", async () => {
+    process.env.ABBA_TOKEN = "test-token-123";
+    abbaHits = [];
+    const { data } = await upload({ audio: audioFile("ab2.webm"), title: "Abba 2" });
+    const id = data.recording.id;
+    await fetch(base + `/api/recordings/${id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ transcript: "quarterly review notes" }),
+    });
+    const { res, data: sd } = await send(id);
+    expect(res.status).toBe(200);
+    expect(sd.abba_note_id).toBe("42");
+    expect(sd.recording.abba_note_id).toBe("42");
+    expect(abbaHits.length).toBe(1);
+    expect(abbaHits[0].auth).toBe("Bearer test-token-123");
+    expect(abbaHits[0].body.title).toBe("Abba 2");
+    expect(abbaHits[0].body.body).toMatch(/quarterly review notes/);
+    expect(abbaHits[0].body.tags).toEqual(["voice-note"]);
+    expect(abbaHits[0].body.shared).toBe(false);
+
+    const again = await send(id);
+    expect(again.data.already_sent).toBe(true);
+    expect(abbaHits.length).toBe(1); // no duplicate note
+  });
+
+  test("nothing to send -> 400", async () => {
+    process.env.ABBA_TOKEN = "test-token-123";
+    const { data } = await upload({ audio: audioFile("ab3.webm"), title: "Abba 3" });
+    const { res, data: sd } = await send(data.recording.id);
+    expect(res.status).toBe(400);
+    expect(sd.error).toMatch(/nothing to send/);
+  });
+
+  test("unknown id -> 404", async () => {
+    process.env.ABBA_TOKEN = "test-token-123";
+    const { res } = await send("nope");
+    expect(res.status).toBe(404);
+  });
+});
