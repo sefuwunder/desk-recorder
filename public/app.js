@@ -1,5 +1,6 @@
 /* desk-recorder client: transport, tape deck animation, real VU meters via
-   WebAudio AnalyserNode, AudioWorklet WAV capture, SpeechRecognition live
+   WebAudio AnalyserNode, AudioWorklet 16kHz mono capture streamed to the
+   server in chunks as it records (flat tab memory), SpeechRecognition live
    interim text, offline server transcription status. Zero deps. */
 (function () {
   "use strict";
@@ -78,7 +79,12 @@
   audioEl.preload = "metadata";
   var actx = null, analyser = null, analyserData = null, mediaSrc = null;
   var meterRAF = 0, clockRAF = 0;
-  var micStream = null, micSource = null, workletNode = null, wavChunks = [], wavSampleRate = 48000, recStart = 0;
+  var micStream = null, micSource = null, workletNode = null, recStart = 0;
+  // chunked upload state: 16-bit mono PCM streams to the server as it is
+  // captured, so a long session never accumulates in tab memory.
+  // Uploads are serialized (one promise chain) to keep byte order exact.
+  var streamId = null, streamTitle = "", pendingPcm = new Int16Array(65536), pendingLen = 0,
+      uploadChain = Promise.resolve(), chunkErrors = 0, totalSamples = 0;
   var workletRegisteredCtx = null; // AudioWorklet module registration is per-AudioContext; register once
   var recog = null, recogFinal = "", recogWanted = false;
   var serverSTT = { available: false, model: "", binary: "" };
@@ -94,7 +100,8 @@
     if (!actx) {
       var AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return false;
-      actx = new AC();
+      try { actx = new AC({ sampleRate: 16000 }); }
+      catch (e) { actx = new AC(); } // older browser: resample below instead
       analyser = actx.createAnalyser();
       analyser.fftSize = 1024;
       analyserData = new Uint8Array(analyser.fftSize);
@@ -208,7 +215,9 @@
     stopPlayback();
     var stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
     } catch (e) {
       showNotice("<strong>Microphone blocked.</strong> Grant mic permission to record, or type notes manually below.");
       return;
@@ -223,7 +232,8 @@
     src.connect(analyser);
     micSource = src;
 
-    // WAV capture: raw mic samples -> worklet -> Float32 chunks on the main thread.
+    // PCM capture: raw mic samples -> worklet -> Float32 messages, converted to
+    // 16-bit and streamed to the server in chunks as recording proceeds.
     // whisper.cpp needs WAV and we ship no ffmpeg, so we record PCM ourselves.
     // The processor name registers once per AudioContext — re-adding throws.
     try {
@@ -242,10 +252,27 @@
       cleanupMic();
       return;
     }
+    // open the server-side recording before the first chunk arrives
+    streamTitle = "Voice note — " + new Date().toLocaleString(undefined, {
+      month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    });
+    try {
+      var opened = await POST("/api/recordings/stream", {
+        title: streamTitle, sampleRate: actx.sampleRate || 16000,
+      });
+      streamId = opened.recording.id;
+    } catch (e) {
+      showNotice("<strong>Could not start upload session:</strong> " + esc(e.message));
+      cleanupMic();
+      return;
+    }
     workletNode = new AudioWorkletNode(actx, "wav-cap");
-    wavChunks = [];
-    wavSampleRate = actx.sampleRate || 48000;
-    workletNode.port.onmessage = function (e) { wavChunks.push(e.data); };
+    pendingPcm = new Int16Array(65536);
+    pendingLen = 0;
+    uploadChain = Promise.resolve();
+    chunkErrors = 0;
+    totalSamples = 0;
+    workletNode.port.onmessage = function (e) { pushPcm(floatTo16(e.data)); };
     src.connect(workletNode);
     // keep the worklet rendering: route through a silent gain to the destination
     var silent = actx.createGain();
@@ -331,18 +358,61 @@
     onWavStop();
   }
 
+  // Float32 mono -> 16-bit PCM, clamped.
+  function floatTo16(f32) {
+    var out = new Int16Array(f32.length);
+    for (var i = 0; i < f32.length; i++) {
+      var v = f32[i] < -1 ? -1 : f32[i] > 1 ? 1 : f32[i];
+      out[i] = v < 0 ? v * 0x8000 : v * 0x7FFF;
+    }
+    return out;
+  }
+
+  // Buffer captured PCM and flush ~2s batches to the server as they arrive.
+  function pushPcm(s16) {
+    if (pendingLen + s16.length > pendingPcm.length) {
+      var bigger = new Int16Array(Math.max(pendingPcm.length * 2, pendingLen + s16.length));
+      bigger.set(pendingPcm.subarray(0, pendingLen));
+      pendingPcm = bigger;
+    }
+    pendingPcm.set(s16, pendingLen);
+    pendingLen += s16.length;
+    totalSamples += s16.length;
+    if (pendingLen >= 32000) flushChunks(); // ~2s at 16kHz
+  }
+
+  // Upload one batch, serialized behind earlier batches so the server
+  // appends bytes in exact order. A failed batch is retried once, then
+  // skipped with a warning (a gap beats losing the whole session).
+  function flushChunks() {
+    if (!pendingLen || !streamId) return Promise.resolve();
+    var bytes = new Uint8Array(pendingPcm.buffer, 0, pendingLen * 2);
+    pendingPcm = new Int16Array(65536);
+    pendingLen = 0;
+    var attempt = function (retried) {
+      return fetch("/api/recordings/" + streamId + "/chunk", {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: bytes,
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error("chunk rejected: " + r.status);
+        })
+        .catch(function (e) {
+          if (!retried) return attempt(true);
+          chunkErrors++;
+          console.warn("[desk-recorder] chunk upload failed, continuing with a gap:", e);
+        });
+    };
+    uploadChain = uploadChain.then(function () { return attempt(false); });
+    return uploadChain;
+  }
+
   async function onWavStop() {
+    // flush any buffered PCM, then wait for every upload to land
+    flushChunks();
+    try { await uploadChain; } catch (e) { /* counted in chunkErrors */ }
     var durationMs = Date.now() - recStart;
-    // concat captured chunks -> downsample to 16kHz mono -> 16-bit PCM WAV
-    var total = 0, i;
-    for (i = 0; i < wavChunks.length; i++) total += wavChunks[i].length;
-    var pcm = new Float32Array(total);
-    var off = 0;
-    for (i = 0; i < wavChunks.length; i++) { pcm.set(wavChunks[i], off); off += wavChunks[i].length; }
-    wavChunks = [];
-    var mono16 = L.downsampleTo16k(pcm, wavSampleRate);
-    var wavBytes = L.encodeWavPcm16(mono16);
-    var blob = new Blob([wavBytes], { type: "audio/wav" });
 
     var interim = interimText.textContent;
     var finalText = (recogFinal + (interim ? " " + interim : "")).trim();
@@ -352,19 +422,24 @@
     resetReels();
     renderNotes();
 
-    if (!blob.size || mono16.length < 1600) { // < 0.1s of audio
+    var sid = streamId, title = streamTitle || "Voice note";
+    streamId = null;
+    streamTitle = "";
+    pendingPcm = new Int16Array(65536);
+    pendingLen = 0;
+    if (!sid || totalSamples < 1600) { // < 0.1s of audio
+      if (sid) DEL("/api/recordings/" + sid).catch(function () {});
       showNotice("<strong>Empty recording</strong> — nothing was captured.");
       return;
     }
-    var title = "Voice note — " + new Date().toLocaleString(undefined, {
-      month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-    });
     try {
-      var fd = new FormData();
-      fd.append("audio", blob, "note.wav");
-      fd.append("title", title);
-      fd.append("duration_ms", String(durationMs));
-      var data = await api("/api/recordings", { method: "POST", body: fd });
+      var data = await POST("/api/recordings/" + sid + "/finish", {
+        title: title,
+        duration_ms: durationMs,
+      });
+      if (chunkErrors) {
+        showNotice("<strong>Saved with gaps:</strong> " + chunkErrors + " audio chunk(s) failed to upload.");
+      }
       // Browser interim is only the stored transcript when the offline engine is absent;
       // otherwise the server-side transcript replaces it on completion.
       if (finalText && !serverSTT.available) {

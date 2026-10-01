@@ -1,13 +1,13 @@
 // desk-recorder: HTTP app factory (testable) + static file serving.
 import { randomUUID } from "node:crypto";
-import { unlink } from "node:fs/promises";
+import { unlink, appendFile, open as fsOpen } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import {
   openDb, listRecordings, getRecording, insertRecording,
   updateRecording, deleteRecording, distinctTags, setTranscriptionState,
   listTodos, getTodo, mergeTodos, setTodoDone, deleteTodo,
-  listSendableTodos, setTodoAscentId,
+  listSendableTodos, setTodoAscentId, addRecordingBytes,
 } from "./db.ts";
 import {
   isAvailable, getTranscribeStatus, isValidWav, transcribeFile,
@@ -18,7 +18,32 @@ import {
 } from "./ascent.ts";
 
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // ~25MB
+export const CHUNK_MAX_BYTES = 4 * 1024 * 1024; // per-chunk cap for streamed uploads
 const AUDIO_EXTS = [".webm", ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".mp4", ".flac"];
+
+// 44-byte PCM WAV header (mono, 16-bit). Written with a placeholder data
+// length at stream start, patched with the real length at stream finish.
+function wavHeader(sampleRate: number, dataLen: number): Uint8Array {
+  const h = new Uint8Array(44);
+  const v = new DataView(h.buffer);
+  const wstr = (o: number, s: string) => {
+    for (let i = 0; i < s.length; i++) h[o + i] = s.charCodeAt(i);
+  };
+  wstr(0, "RIFF");
+  v.setUint32(4, 36 + dataLen, true);
+  wstr(8, "WAVE");
+  wstr(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); // PCM
+  v.setUint16(22, 1, true); // mono
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true); // byte rate
+  v.setUint16(32, 2, true); // block align
+  v.setUint16(34, 16, true); // bits per sample
+  wstr(36, "data");
+  v.setUint32(40, dataLen, true);
+  return h;
+}
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -48,6 +73,8 @@ export function buildApp(opts: AppOptions) {
   const dir = audioDir(dataDir);
   mkdirSync(dir, { recursive: true }); // data/ is gitignored; create it on first run
   const db = openDb(opts.dbPath || join(dataDir, "desk-recorder.db"));
+  // ids with an in-flight chunked upload (created via /stream, not yet /finish)
+  const openStreams = new Set<string>();
 
   /** Background whisper transcription for one recording. Never throws. */
   async function runTranscription(id: string): Promise<void> {
@@ -77,6 +104,15 @@ export function buildApp(opts: AppOptions) {
         e instanceof Error ? e.message : "transcription failed"
       );
     }
+  }
+
+  /** Queue offline transcription for a finished WAV recording, if set up. */
+  function maybeAutoTranscribe(id: string): void {
+    if (!isAvailable(dataDir)) return;
+    const rec = getRecording(db, id);
+    if (!rec) return;
+    setTranscriptionState(db, id, "queued");
+    runTranscription(id).catch(() => {});
   }
 
   async function handle(req: Request): Promise<Response> {
@@ -127,14 +163,83 @@ export function buildApp(opts: AppOptions) {
         tags: "[]",
       });
       // Auto-transcribe WAV uploads when the offline engine is set up.
-      if (isAvailable(dataDir)) {
-        const head = new Uint8Array(await Bun.file(join(dir, filename)).slice(0, 12).arrayBuffer());
-        if (isValidWav(head)) {
-          setTranscriptionState(db, id, "queued");
-          runTranscription(id).catch(() => {});
-        }
-      }
+      const head = new Uint8Array(await Bun.file(join(dir, filename)).slice(0, 12).arrayBuffer());
+      if (isValidWav(head)) maybeAutoTranscribe(id);
       return json({ recording: rec }, 201);
+    }
+
+    // ---- chunked upload: flat memory for long sessions ----
+    // The client streams 16-bit mono PCM chunks as they are captured; the
+    // server appends them to a WAV file whose header is patched at finish.
+    // POST /api/recordings/stream        { title?, sampleRate? } -> { recording } (201)
+    // POST /api/recordings/:id/chunk    raw s16le PCM bytes, appended in order
+    // POST /api/recordings/:id/finish   { title?, duration_ms? } -> { recording }
+    if (path === "/api/recordings/stream" && method === "POST") {
+      let b: Record<string, unknown> = {};
+      try { b = await req.json(); } catch { /* title/sampleRate optional */ }
+      const sampleRate = Math.floor(Number(b.sampleRate) || 16000);
+      if (!(sampleRate >= 8000 && sampleRate <= 96000)) {
+        return json({ error: "sampleRate must be 8000..96000" }, 400);
+      }
+      const id = randomUUID();
+      const filename = `${id}.wav`;
+      await Bun.write(join(dir, filename), wavHeader(sampleRate, 0));
+      const rec = insertRecording(db, {
+        id,
+        title: (typeof b.title === "string" && b.title.trim()) || `Voice note ${new Date().toLocaleString()}`,
+        filename,
+        mime: "audio/wav",
+        size: 0,
+        duration_ms: 0,
+        transcript: "",
+        md_notes: "",
+        tags: "[]",
+      });
+      openStreams.add(id);
+      return json({ recording: rec }, 201);
+    }
+    const chunkM = path.match(/^\/api\/recordings\/([^/]+)\/chunk$/);
+    if (chunkM && method === "POST") {
+      const id = chunkM[1];
+      const rec = getRecording(db, id);
+      if (!rec) return json({ error: "not found" }, 404);
+      if (!openStreams.has(id)) return json({ error: "stream is not open" }, 409);
+      const buf = Buffer.from(await req.arrayBuffer());
+      if (!buf.length) return json({ error: "empty chunk" }, 400);
+      if (buf.length > CHUNK_MAX_BYTES) return json({ error: "chunk too large" }, 413);
+      if (rec.size + buf.length > MAX_AUDIO_BYTES) return json({ error: "audio exceeds 25MB cap" }, 413);
+      await appendFile(join(dir, basename(rec.filename)), buf);
+      addRecordingBytes(db, id, buf.length);
+      return json({ size: rec.size + buf.length });
+    }
+    const finM = path.match(/^\/api\/recordings\/([^/]+)\/finish$/);
+    if (finM && method === "POST") {
+      const id = finM[1];
+      const rec = getRecording(db, id);
+      if (!rec) return json({ error: "not found" }, 404);
+      if (!openStreams.has(id)) return json({ error: "stream is not open" }, 409);
+      openStreams.delete(id);
+      // patch the WAV header with the real data length (size counts PCM bytes only)
+      const wavPath = join(dir, basename(rec.filename));
+      const fh = await fsOpen(wavPath, "r+");
+      try {
+        const hdr = Buffer.alloc(44);
+        await fh.read(hdr, 0, 44, 0);
+        const sampleRate = hdr.readUInt32LE(24);
+        await fh.write(wavHeader(sampleRate, rec.size), 0, 44, 0);
+      } finally {
+        await fh.close();
+      }
+      let b: Record<string, unknown> = {};
+      try { b = await req.json(); } catch { /* optional */ }
+      const title = typeof b.title === "string" && b.title.trim()
+        ? b.title.trim().slice(0, 200) : rec.title;
+      const updated = updateRecording(db, id, {
+        title,
+        duration_ms: Math.max(0, Math.floor(Number(b.duration_ms) || 0)),
+      });
+      maybeAutoTranscribe(id);
+      return json({ recording: updated });
     }
 
     // ---- API: single recording routes

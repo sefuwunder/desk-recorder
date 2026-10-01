@@ -6,7 +6,7 @@ An executive desk recorder for capturing and organizing transcribed voice notes 
 
 ## Features
 
-- **Record** — big transport (● record / ■ stop / ▶ play), mic capture via an `AudioWorklet` WAV recorder (16kHz mono 16-bit PCM, ~2MB/min — no ffmpeg needed). Files land in gitignored `data/audio/`, metadata in SQLite.
+- **Record** — big transport (● record / ■ stop / ▶ play), mic capture via an `AudioWorklet` (16kHz mono 16-bit PCM, ~2MB/min — no ffmpeg needed). Audio streams to the server in ~2s chunks as it records, so long sessions never pile up in tab memory. Files land in gitignored `data/audio/`, metadata in SQLite.
 - **Animated tape mechanism** — SVG reels spin while recording/playing (CSS, state-driven), tape-pack fill levels shift with progress, running `MM:SS:CS` timecode, and VU meters driven by a **real** `AnalyserNode` (mic during record, playback stream during play — no fake oscillation).
 - **Transcription, two ways** —
   - *Offline (server-side, any browser):* after recording stops, the server transcribes the WAV with a local whisper.cpp binary (`data/whisper/whisper-cli` + model, CPU, no network). The note shows Queued → Transcribing… → done, and the transcript is stored on the recording. Set it up once with `scripts/setup-transcription.sh`.

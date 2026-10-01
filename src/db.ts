@@ -163,6 +163,11 @@ export function deleteRecording(db: Database, id: string): Recording | null {
   return rec;
 }
 
+// Append-only accounting for chunked uploads: bump size without rewriting.
+export function addRecordingBytes(db: Database, id: string, n: number): void {
+  db.prepare("UPDATE recordings SET size = size + ?, updated_at = ? WHERE id = ?").run(n, Date.now(), id);
+}
+
 const TODO_COLS =
   "id, recording_id, text, done, position, created_at, ascent_task_id";
 

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildApp } from "../src/app.ts";
+import { isValidWav } from "../src/whisper.ts";
 
 let base = "";
 let stop: () => void = () => {};
@@ -175,5 +176,103 @@ describe("recordings API", () => {
       body: JSON.stringify({ title: "x" }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe("chunked upload stream", () => {
+  async function startStream(title = "Streamed note", sampleRate = 16000) {
+    const res = await fetch(base + "/api/recordings/stream", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title, sampleRate }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { res, data };
+  }
+  async function chunk(id, bytes) {
+    const res = await fetch(base + `/api/recordings/${id}/chunk`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: bytes,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { res, data };
+  }
+
+  test("stream -> chunks append in order -> finish yields a valid WAV", async () => {
+    const { res: sr, data: sd } = await startStream();
+    expect(sr.status).toBe(201);
+    const id = sd.recording.id;
+    expect(sd.recording.mime).toBe("audio/wav");
+    expect(sd.recording.size).toBe(0);
+
+    const c1 = await chunk(id, new Uint8Array([1, 2, 3, 4]));
+    expect(c1.res.status).toBe(200);
+    expect(c1.data.size).toBe(4);
+    const c2 = await chunk(id, new Uint8Array([5, 6]));
+    expect(c2.data.size).toBe(6);
+
+    const fin = await fetch(base + `/api/recordings/${id}/finish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Final title", duration_ms: 2000 }),
+    });
+    const fd = await fin.json();
+    expect(fin.status).toBe(200);
+    expect(fd.recording.title).toBe("Final title");
+    expect(fd.recording.duration_ms).toBe(2000);
+    expect(fd.recording.size).toBe(6);
+
+    const raw = new Uint8Array(await fetch(base + `/api/recordings/${id}/audio`).then((r) => r.arrayBuffer()));
+    expect(isValidWav(raw)).toBe(true);
+    const v = new DataView(raw.buffer);
+    expect(v.getUint32(24, true)).toBe(16000); // sample rate in header
+    expect(v.getUint32(40, true)).toBe(6); // data length patched at finish
+    expect([...raw.slice(44)]).toEqual([1, 2, 3, 4, 5, 6]); // byte order preserved
+  });
+
+  test("finish keeps a custom sample rate in the header", async () => {
+    const { data: sd } = await startStream("sr test", 44100);
+    const id = sd.recording.id;
+    await chunk(id, new Uint8Array([7, 8]));
+    await fetch(base + `/api/recordings/${id}/finish`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    const raw = new Uint8Array(await fetch(base + `/api/recordings/${id}/audio`).then((r) => r.arrayBuffer()));
+    expect(isValidWav(raw)).toBe(true);
+    expect(new DataView(raw.buffer).getUint32(24, true)).toBe(44100);
+  });
+
+  test("chunk to unknown id is 404", async () => {
+    const { res } = await chunk("nope", new Uint8Array([1]));
+    expect(res.status).toBe(404);
+  });
+
+  test("chunk after finish is 409", async () => {
+    const { data: sd } = await startStream("close me");
+    const id = sd.recording.id;
+    await fetch(base + `/api/recordings/${id}/finish`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    const { res } = await chunk(id, new Uint8Array([9]));
+    expect(res.status).toBe(409);
+  });
+
+  test("empty chunk is 400", async () => {
+    const { data: sd } = await startStream("empty chunk");
+    const { res } = await chunk(sd.recording.id, new Uint8Array([]));
+    expect(res.status).toBe(400);
+  });
+
+  test("finish unknown id is 404", async () => {
+    const res = await fetch(base + "/api/recordings/nope/finish", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test("bad sampleRate is rejected", async () => {
+    const { res } = await startStream("bad sr", 123);
+    expect(res.status).toBe(400);
   });
 });
